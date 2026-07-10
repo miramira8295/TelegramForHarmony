@@ -1,0 +1,22 @@
+/node_modules
+/oh_modules
+/local.properties
+/.idea
+**/build
+/.hvigor
+.cxx
+/.clangd
+/.clang-format
+/.clang-tidy
+**/.test
+/.appanalyzer
+# API credentials — never commit
+**/ApiCredentials.ets
+# Prebuilt native libraries — fetched via scripts/fetch-tdlib.sh
+entry/libs/
+# Local MCP config (machine-specific absolute paths)
+.mcp.json
+# Internal docs & AI tooling — not published
+/docs
+/.claude
+/.superpowers

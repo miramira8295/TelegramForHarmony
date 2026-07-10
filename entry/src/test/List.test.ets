@@ -1,0 +1,37 @@
+import localUnitTest from './LocalUnit.test';
+import tdClientTest from './TdClient.test';
+import authServiceTest from './AuthService.test';
+import formatTimeTest from './formatTime.test';
+import formatPreviewTest from './formatPreview.test';
+import chatEntryTest from './ChatEntry.test';
+import userStoreTest from './UserStore.test';
+import chatStoreTest from './ChatStore.test';
+import fileServiceTest from './FileService.test';
+import listKeyTest from './ListKey.test';
+import folderStoreTest from './FolderStore.test';
+import unreadCountStoreTest from './UnreadCountStore.test';
+import formatTTLTest from './FormatTTL.test';
+import formatUserStatusTest from './FormatUserStatus.test';
+import formatMsgContentTest from './FormatMsgContent.test';
+import messageEntryTest from './MessageEntry.test';
+import messageStoreTest from './MessageStore.test';
+
+export default function testsuite() {
+  localUnitTest();
+  tdClientTest();
+  authServiceTest();
+  formatTimeTest();
+  formatPreviewTest();
+  chatEntryTest();
+  userStoreTest();
+  chatStoreTest();
+  fileServiceTest();
+  listKeyTest();
+  folderStoreTest();
+  unreadCountStoreTest();
+  formatTTLTest();
+  formatUserStatusTest();
+  formatMsgContentTest();
+  messageEntryTest();
+  messageStoreTest();
+}

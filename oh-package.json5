@@ -1,0 +1,13 @@
+{
+  "modelVersion": "6.1.1",
+  "description": "Please describe the basic information.",
+  "dependencies": {
+    "@ohos/ijkplayer": "2.0.9",
+    "@ohos/lottie": "^2.0.32"
+  },
+  "devDependencies": {
+    "@ohos/hypium": "1.0.25",
+    "@ohos/hamock": "1.0.0"
+  },
+  "dynamicDependencies": {}
+}

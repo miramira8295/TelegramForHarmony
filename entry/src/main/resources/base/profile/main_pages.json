@@ -1,0 +1,9 @@
+{
+  "src": [
+    "pages/Index",
+    "pages/chatlist/ArchivePage",
+    "pages/chat/ChatPage",
+    "pages/profile/ProfilePage",
+    "pages/profile/ChatProfilePage"
+  ]
+}
