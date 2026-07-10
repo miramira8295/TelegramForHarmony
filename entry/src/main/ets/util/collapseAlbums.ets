@@ -1,4 +1,5 @@
 import { MessageEntry } from '../store/MessageEntry';
+import { TdObject } from '../tdkit/TdTypes';
 import { formatDateSeparator, sameDay } from './formatDateSeparator';
 
 // A display row: a single message, or a collapsed run of album (media group)
@@ -12,6 +13,7 @@ export interface AlbumGroup {
   photoIsVideo: boolean[]; // parallel to photoPaths — true for video members (play icon overlay)
   photoProgress: number[]; // parallel to photoPaths — thumbnail download progress (0-100)
   caption: string;         // album caption (from whichever member carries text)
+  captionEntities: TdObject[]; // the caption's TDLib entities (links/mentions/hashtags)
   dateLabel: string;       // date pill shown above this row when the day changes ('' = none)
   showAvatar: boolean;     // last row of a same-sender run — the only one with the avatar
   showSenderName: boolean; // first row of a same-sender run — the only one with the name
@@ -67,6 +69,7 @@ export function collapseAlbums(list: MessageEntry[]): AlbumGroup[] {
       const photoIsVideo: boolean[] = [];
       const photoProgress: number[] = [];
       let caption = '';
+      let captionEntities: TdObject[] = [];
       let j = i;
       while (j < list.length && list[j].albumId === m.albumId && (list[j].contentType === 'photo' || list[j].contentType === 'video')) {
         memberIds.push(list[j].id);
@@ -76,6 +79,7 @@ export function collapseAlbums(list: MessageEntry[]): AlbumGroup[] {
         photoProgress.push(list[j].photoProgress);
         if (list[j].text !== '') {
           caption = list[j].text;
+          captionEntities = list[j].textEntities;
         }
         j += 1;
       }
@@ -88,6 +92,7 @@ export function collapseAlbums(list: MessageEntry[]): AlbumGroup[] {
         photoIsVideo,
         photoProgress,
         caption,
+        captionEntities,
         dateLabel,
         showAvatar: true,
         showSenderName: true
@@ -103,6 +108,7 @@ export function collapseAlbums(list: MessageEntry[]): AlbumGroup[] {
         photoIsVideo: [],
         photoProgress: [],
         caption: '',
+        captionEntities: [],
         dateLabel,
         showAvatar: true,
         showSenderName: true

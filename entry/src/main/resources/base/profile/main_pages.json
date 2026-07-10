@@ -4,6 +4,7 @@
     "pages/chatlist/ArchivePage",
     "pages/chat/ChatPage",
     "pages/profile/ProfilePage",
-    "pages/profile/ChatProfilePage"
+    "pages/profile/ChatProfilePage",
+    "pages/search/GlobalSearchPage"
   ]
 }

@@ -2,7 +2,8 @@ import { getFolderStore, getUnreadCountStore, getChatStore } from '../../tdkit/G
 import { FolderInfo } from '../../store/FolderStore';
 import { ChatListView } from './ChatListView';
 import { MainTabBody } from './MainTabBody';
-import { COLOR_PRIMARY, COLOR_TEXT_SECONDARY, COLOR_TAB_SELECTED, COLOR_TAB_UNSELECTED, COLOR_BADGE_BG, COLOR_TAB_PILL_BG } from '../../util/theme';
+import { COLOR_PRIMARY, COLOR_TEXT_PRIMARY, COLOR_TEXT_SECONDARY, COLOR_TAB_SELECTED, COLOR_TAB_UNSELECTED, COLOR_BADGE_BG, COLOR_TAB_PILL_BG } from '../../util/theme';
+import { router } from '@kit.ArkUI';
 
 interface TabSpec {
   key: string;
@@ -15,6 +16,8 @@ export struct ChatListPage {
   @State folders: FolderInfo[] = [];
   @State unreadMap: Map<string, number> = new Map();
   @State selectedIndex: number = 0;
+  @State searchMode: boolean = false;
+  @State searchQuery: string = '';
   @StorageProp('topSafeHeight') topSafe: number = 0;
   // Sliding selection pill: position/size interpolated between tab frames so it
   // follows the finger during content swipes (Telegram-style).
@@ -129,11 +132,41 @@ export struct ChatListPage {
 
   @Builder
   topBar() {
-    Row() {
-      Text('Telegram').fontSize(24).fontWeight(FontWeight.Bold).fontColor(COLOR_PRIMARY).layoutWeight(1);
-      SymbolGlyph($r('sys.symbol.magnifyingglass')).fontSize(24).fontColor([COLOR_TEXT_SECONDARY]).margin({ right: 16 });
-      SymbolGlyph($r('sys.symbol.more')).fontSize(24).fontColor([COLOR_TEXT_SECONDARY]);
-    }.width('100%').padding({ left: 16, right: 16, top: 12, bottom: 8 });
+    if (this.searchMode) {
+      // Expanded global search bar (same pattern as the in-chat search header).
+      Row({ space: 8 }) {
+        Row() {
+          SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(22).fontColor([COLOR_TEXT_PRIMARY]);
+        }
+        .width(40).height(40).borderRadius(20).backgroundColor(Color.White)
+        .justifyContent(FlexAlign.Center)
+        .shadow({ radius: 4, color: '#12000000', offsetX: 0, offsetY: 1 })
+        .onClick(() => {
+          this.searchMode = false;
+          this.searchQuery = '';
+        });
+        TextInput({ text: this.searchQuery, placeholder: '全局搜索' })
+          .layoutWeight(1).height(40)
+          .backgroundColor(Color.White).borderRadius(20)
+          .defaultFocus(true)
+          .onChange((v: string) => { this.searchQuery = v; })
+          .onSubmit(() => {
+            const q = this.searchQuery.trim();
+            if (q !== '') {
+              const params: Record<string, Object> = { 'query': q };
+              router.pushUrl({ url: 'pages/search/GlobalSearchPage', params: params });
+            }
+          });
+      }.width('100%').padding({ left: 12, right: 12, top: 6, bottom: 8 })
+      .alignItems(VerticalAlign.Center);
+    } else {
+      Row() {
+        Text('Telegram').fontSize(24).fontWeight(FontWeight.Bold).fontColor(COLOR_PRIMARY).layoutWeight(1);
+        SymbolGlyph($r('sys.symbol.magnifyingglass')).fontSize(24).fontColor([COLOR_TEXT_SECONDARY]).margin({ right: 16 })
+          .onClick(() => { this.searchMode = true; });
+        SymbolGlyph($r('sys.symbol.more')).fontSize(24).fontColor([COLOR_TEXT_SECONDARY]);
+      }.width('100%').padding({ left: 16, right: 16, top: 12, bottom: 8 });
+    }
   }
 
   @Builder

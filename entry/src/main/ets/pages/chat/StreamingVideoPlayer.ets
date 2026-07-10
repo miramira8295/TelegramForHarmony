@@ -55,6 +55,7 @@ export struct StreamingVideoPlayer {
   onBackgroundTap: () => void = (): void => {};
   onSwipeNext: () => void = (): void => {};
   onSwipePrev: () => void = (): void => {};
+  onDownloadProgress: (percent: number) => void = (): void => {};
   private player: IjkMediaPlayer | null = null;
   private session: VideoStreamSession | null = null;
   private rangeServer: VideoRangeServer | null = null;
@@ -156,6 +157,7 @@ export struct StreamingVideoPlayer {
     this.session = session;
     this.progressUnsub = session.subscribeProgress((buffered: number, total: number): void => {
       this.bufferedPercent = total > 0 ? Math.min(100, Math.floor((buffered / total) * 100)) : 0;
+      this.onDownloadProgress(this.bufferedPercent);
     });
     session.start();
     try {
@@ -405,25 +407,28 @@ export struct StreamingVideoPlayer {
           this.release();
         })
         .onClick(() => { this.onBackgroundTap(); });
-      // Top-right download indicator: stays visible until the file is fully
-      // downloaded, with the status label underneath only while buffering.
-      if (this.status !== '' || this.bufferedPercent < 100) {
+      // Controls hidden → a full-size transparent tap catcher brings them
+      // back. The SURFACE XComponent's own onClick can be swallowed by the
+      // native layer, which left the chrome un-summonable after hiding it.
+      if (!this.showControls) {
+        Column()
+          .width('100%').height('100%')
+          .onClick(() => { this.onBackgroundTap(); });
+      }
+      // Actual stall (buffering): centered ring, same visual language as the
+      // photo viewer's loading indicator. The steady background download
+      // progress lives unobtrusively in the control bar instead.
+      if (this.status !== '') {
         Column({ space: 4 }) {
           Stack() {
             Progress({ value: this.bufferedPercent, total: 100, type: ProgressType.Ring })
               .width(44).height(44).color(Color.White);
             Text(`${this.bufferedPercent}%`).fontSize(10).fontColor(Color.White);
           }
-          if (this.status !== '') {
-            Text(this.status).fontSize(11).fontColor(Color.White);
-          }
+          Text(this.status).fontSize(11).fontColor(Color.White);
         }
         .alignItems(HorizontalAlign.Center)
-        .padding(8).backgroundColor('#00000066').borderRadius(14)
-        // Same vertical line as the viewer's top chrome bar.
-        .position({ x: '100%', y: this.topSafe + 12 })
-        .markAnchor({ x: '100%', y: 0 })
-        .offset({ x: -16 });
+        .padding(10).backgroundColor('#00000066').borderRadius(14);
       }
       if (this.isCompleted) {
         Stack() {

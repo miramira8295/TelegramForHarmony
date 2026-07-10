@@ -50,6 +50,7 @@ struct ChatPage {
   @State nowSec: number = 0;
   @State viewerMsgId: number = 0;
   @State chromeVisible: boolean = true;
+  @State viewerDlPercent: number = 100; // active video's download progress (top chrome)
   @State viewerInitIdx: number = 0; // Swiper's initial page when the viewer opens
   private viewerSwiperCtrl: SwiperController = new SwiperController();
   @State swipeDir: number = 1; // 1 = advancing forward (next), -1 = going back — drives the slide direction
@@ -198,8 +199,8 @@ struct ChatPage {
         // Only follow to the bottom for genuinely new messages AND only when the
         // user is already near the bottom — never yank them down while they read
         // history or on photo/read-receipt updates.
-        // Mark the arrivals as fresh for a beat so their bubbles slide in from
-        // the bottom; rows rebuilt while scrolling history never animate.
+        // Mark the arrivals as fresh for a beat so their bubbles gently enter;
+        // rows rebuilt while scrolling history never animate.
         this.freshSinceId = this.lastMaxId;
         const clearSeq = ++this.freshClearSeq;
         setTimeout(() => {
@@ -310,6 +311,7 @@ struct ChatPage {
   // Open/close wrapped in animateTo so the geometryTransition pairing (viewer
   // ↔ tapped thumbnail) animates as a hero expand/shrink.
   private openViewer(messageId: number): void {
+    this.viewerDlPercent = 100; // fresh page — player reports real progress
     animateTo({ duration: 300, curve: Curve.Friction }, () => {
       this.onMediaTap(messageId);
     });
@@ -464,13 +466,12 @@ struct ChatPage {
   // to the specific message when the link points to one; everything else opens
   // in the system browser.
   private onLinkTap(url: string): void {
-    // Hashtag tap → in-chat search for that tag.
+    // Hashtag tap → global search across all chats.
     if (url.startsWith('tg-hashtag:')) {
       const tag = url.substring('tg-hashtag:'.length);
       if (tag !== '') {
-        this.enterSearch();
-        this.searchQuery = tag;
-        this.runSearch(0, 0);
+        const params: Record<string, Object> = { 'query': tag };
+        router.pushUrl({ url: 'pages/search/GlobalSearchPage', params: params });
       }
       return;
     }
@@ -855,6 +856,10 @@ struct ChatPage {
   }
 
   // Swiper page settled on a new album member.
+  private resetViewerDl(): void {
+    this.viewerDlPercent = 100;
+  }
+
   private onViewerPageChange(index: number): void {
     const ids = this.viewerSiblingIds();
     if (index < 0 || index >= ids.length) {
@@ -865,6 +870,7 @@ struct ChatPage {
       return;
     }
     this.viewerMsgId = id;
+    this.resetViewerDl();
     if (this.store !== null && !this.viewerSiblingIsVideo(id)) {
       this.store.requestFullPhoto(id);
     }
@@ -952,6 +958,7 @@ struct ChatPage {
                 videoWidth: this.viewerVideoWidth(),
                 videoHeight: this.viewerVideoHeight(),
                 showControls: this.chromeVisible,
+                onDownloadProgress: (p: number): void => { this.viewerDlPercent = p; },
                 onBackgroundTap: () => { this.toggleChrome(); },
                 onSwipeNext: () => { this.switchViewer(1); },
                 onSwipePrev: () => { this.switchViewer(-1); }
@@ -1278,13 +1285,46 @@ struct ChatPage {
     .borderRadius(12);
   }
 
+  // Horizontal center (vp, window coords) of the smiley button — the anchor
+  // the emoji panel scales out of / back into.
+  private emojiBtnCx: number = 48;
+  @State inputBarH: number = 60; // measured input bar height — anchors the emoji overlay
+  // "Fake" animation: the open/close transition flies an empty white shell;
+  // the real panel content (hundreds of emoji + sticker players) mounts only
+  // after the animation lands, so frames stay cheap.
+  @State panelContentReady: boolean = false;
+  private panelReadySeq: number = 0;
+  // Show/hide the emoji/sticker panel with an animated slide (animateTo also
+  // animates the list resize above it).
+  private setEmojiPanel(show: boolean): void {
+    if (this.showEmojiPanel === show) {
+      return;
+    }
+    const seq = ++this.panelReadySeq;
+    if (show) {
+      animateTo({ duration: 220, curve: Curve.EaseOut }, () => {
+        this.showEmojiPanel = true;
+      });
+      setTimeout(() => {
+        if (seq === this.panelReadySeq && this.showEmojiPanel) {
+          this.panelContentReady = true; // content pops in after the shell lands
+        }
+      }, 240);
+    } else {
+      this.panelContentReady = false; // unmount the heavy content first
+      animateTo({ duration: 220, curve: Curve.EaseOut }, () => {
+        this.showEmojiPanel = false;
+      });
+    }
+  }
+
   // 菜单 pill: toggle the full bot-command catalog in the suggestion panel.
   private toggleBotMenu(): void {
     if (this.commandItems.length > 0) {
       this.commandItems = [];
     } else {
       this.mentionItems = [];
-      this.showEmojiPanel = false;
+      this.setEmojiPanel(false);
       this.commandItems = this.allCommands;
     }
   }
@@ -1588,8 +1628,12 @@ struct ChatPage {
         }
         SymbolGlyph($r(this.showEmojiPanel ? 'sys.symbol.face_smiling_fill' : 'sys.symbol.face_smiling'))
           .fontSize(24).fontColor([this.showEmojiPanel ? COLOR_PRIMARY : COLOR_TEXT_SECONDARY])
+          .onAreaChange((_old: Area, area: Area) => {
+            const gx = area.globalPosition.x as number;
+            this.emojiBtnCx = gx + (area.width as number) / 2;
+          })
           .onClick(() => {
-            this.showEmojiPanel = !this.showEmojiPanel;
+            this.setEmojiPanel(!this.showEmojiPanel);
             this.mentionItems = [];
             this.commandItems = [];
           });
@@ -1598,7 +1642,7 @@ struct ChatPage {
             this.draft = v;
             this.updateSuggestions(v);
           })
-          .onFocus(() => { this.showEmojiPanel = false; });
+          .onFocus(() => { this.setEmojiPanel(false); });
         SymbolGlyph($r('sys.symbol.paperclip')).fontSize(24).fontColor([COLOR_TEXT_SECONDARY])
           .bindMenu([
             { value: '照片或视频', action: (): void => { this.pickAndSendMedia(); } } as MenuElement,
@@ -1630,7 +1674,8 @@ struct ChatPage {
         }.width(44).height(44);
       }
     }.width('100%').padding({ left: 12, right: 12, top: 8, bottom: this.bottomInset() })
-    .alignItems(VerticalAlign.Center);
+    .alignItems(VerticalAlign.Center)
+    .onAreaChange((_old: Area, area: Area) => { this.inputBarH = area.height as number; });
   }
 
   // Segmented indicator like Telegram: short vertical bars, the currently-shown
@@ -1750,6 +1795,7 @@ struct ChatPage {
                 albumPaths: g.photoPaths, albumRatios: g.photoRatios,
                 albumMemberIds: g.memberIds, albumIsVideo: g.photoIsVideo,
                 albumProgress: g.photoProgress, albumCaption: g.caption,
+                albumCaptionEntities: g.captionEntities,
                 hiddenMediaId: this.viewerMsgId,
                 onMediaTap: (id: number, x: number, y: number): void => {
                   this.tapX = x;
@@ -1789,9 +1835,7 @@ struct ChatPage {
             // the user starts interacting, before it can detach from its row.
             this.cancelFlash();
             // Tapping outside the emoji/sticker panel dismisses it.
-            if (this.showEmojiPanel) {
-              this.showEmojiPanel = false;
-            }
+            this.setEmojiPanel(false);
           }
         })
         .onScrollIndex((start: number, end: number) => {
@@ -1830,23 +1874,6 @@ struct ChatPage {
         if (this.mentionItems.length > 0 || this.commandItems.length > 0) {
           this.suggestionPanel();
         }
-        if (this.showEmojiPanel) {
-          EmojiPanel({
-            onPick: (e: string): void => { this.insertEmoji(e); },
-            onPickSticker: (s: StickerItem): void => {
-              if (this.store !== null) {
-                this.atBottom = true;
-                this.store.sendSticker(s.fileId, s.width, s.height);
-              }
-            },
-            onPickGif: (g: GifItem): void => {
-              if (this.store !== null) {
-                this.atBottom = true;
-                this.store.sendAnimation(g.fileId, g.width, g.height, g.duration);
-              }
-            }
-          });
-        }
         if (this.searchMode) {
           // Search bottom bar: current position / total matches.
           Row() {
@@ -1868,6 +1895,45 @@ struct ChatPage {
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
       .backgroundColor('#EFEFF4');
 
+      // Emoji/sticker panel OVERLAYS the chat (not in the layout flow): the
+      // message list keeps its height, so its scrollbar/FAB stay put, and the
+      // open/close animation doesn't relayout the LazyForEach every frame.
+      if (this.showEmojiPanel) {
+        // Full-height wrapper only positions the panel above the input bar;
+        // Transparent hit-testing lets taps outside the panel reach the list.
+        Column() {
+          Column() {
+            if (this.panelContentReady) {
+              EmojiPanel({
+                onPick: (e: string): void => { this.insertEmoji(e); },
+                onPickSticker: (s: StickerItem): void => {
+                  if (this.store !== null) {
+                    this.atBottom = true;
+                    this.store.sendSticker(s.fileId, s.width, s.height);
+                  }
+                },
+                onPickGif: (g: GifItem): void => {
+                  if (this.store !== null) {
+                    this.atBottom = true;
+                    this.store.sendAnimation(g.fileId, g.width, g.height, g.duration);
+                  }
+                }
+              });
+            }
+          }
+          .width('100%').height(300)
+          .backgroundColor(Color.White)
+          .shadow({ radius: 12, color: '#22000000', offsetX: 0, offsetY: -2 })
+          // Hero-style: grow out of the smiley button, shrink back into it.
+          .transition(TransitionEffect.scale({ x: 0.05, y: 0.05, centerX: this.emojiBtnCx, centerY: '100%' })
+            .combine(TransitionEffect.OPACITY)
+            .animation({ duration: 220, curve: Curve.EaseOut }));
+        }
+        .width('100%').height('100%')
+        .justifyContent(FlexAlign.End)
+        .padding({ bottom: this.inputBarH })
+        .hitTestBehavior(HitTestMode.Transparent);
+      }
       // Search result navigation: ∧ older match / ∨ newer match, right edge.
       if (this.searchMode && this.searchResults.length > 0) {
         Column({ space: 10 }) {
@@ -1919,14 +1985,29 @@ struct ChatPage {
                 if (this.viewerFileName() !== '') {
                   Text(this.viewerFileName()).fontSize(13).fontColor('#F3F4F6').fontWeight(FontWeight.Medium)
                     .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                    .flexShrink(1)
                     .constraintSize({ maxWidth: 220 });
                 }
               }
               .padding({ left: 12, right: 14, top: 10, bottom: 10 })
               .backgroundColor(VIEWER_CHROME_BG)
               .borderRadius(18)
-              .alignItems(VerticalAlign.Center);
+              .alignItems(VerticalAlign.Center)
+              .flexShrink(1);
               Blank().layoutWeight(1).hitTestBehavior(HitTestMode.None);
+              // Video download ring — between the title and the ⋮ menu; fixed
+              // size so it can never squeeze the menu button out.
+              if (this.viewerDlPercent < 100) {
+                Stack() {
+                  Progress({ value: this.viewerDlPercent, total: 100, type: ProgressType.Ring })
+                    .width(30).height(30).color(Color.White);
+                  Text(`${this.viewerDlPercent}`).fontSize(9).fontColor(Color.White);
+                }
+                .width(38).height(38)
+                .backgroundColor(VIEWER_CHROME_BG).borderRadius(19)
+                .margin({ right: 8 })
+                .flexShrink(0);
+              }
               // "⋮" menu — 保存到相册 etc.
               Stack() {
                 Circle({ width: 36, height: 36 }).fill(VIEWER_CHROME_BG);

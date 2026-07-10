@@ -35,6 +35,7 @@ export struct MessageBubble {
   @Prop albumIsVideo: boolean[];
   @Prop albumProgress: number[];
   @Prop albumCaption: string;
+  albumCaptionEntities: TdObject[] = [];
   @StorageProp('screenWidthVp') screenW: number = 360;
   // Message id of the media currently open in the fullscreen viewer — its
   // thumbnail is temporarily removed so geometryTransition can pair it with
@@ -399,11 +400,9 @@ export struct MessageBubble {
     if (this.albumPaths.length > 1) {
       this.albumGrid();
       if (this.albumCaption !== '') {
-        Text() {
-          Span(this.albumCaption).fontColor(COLOR_BUBBLE_TEXT);
-          Span(this.timeReserve()).fontSize(14).fontColor(Color.Transparent);
-        }.fontSize(16).margin({ top: 4 })
-          .constraintSize({ maxWidth: this.inlineMaxW() });
+        // Rich caption: links/@mentions/#hashtags stay tappable in albums too.
+        this.richContent(this.albumCaption, this.albumCaptionEntities, this.inlineMaxW(),
+          this.timeReserveInText());
       }
     } else if (this.msg.contentType === 'text') {
       this.richContent(this.msg.text, this.msg.textEntities, this.inlineMaxW(),
@@ -707,12 +706,12 @@ export struct MessageBubble {
         this.inlineKeyboard();
       }
     }.width('100%')
-    // New arrivals slide up from below the input bar and fade in; history rows
-    // (animateIn false) attach with no transition.
+    // A restrained message entrance: a short rise and fade feels responsive
+    // without detaching the bubble from its final position.
     .transition(this.animateIn
-      ? TransitionEffect.translate({ y: 60 })
+      ? TransitionEffect.translate({ y: 16 })
         .combine(TransitionEffect.OPACITY)
-        .animation({ duration: 300, curve: Curve.EaseOut })
+        .animation({ duration: 220, curve: Curve.FastOutSlowIn })
       : TransitionEffect.IDENTITY);
     }
   }
