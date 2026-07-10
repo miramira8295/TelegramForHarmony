@@ -29,11 +29,21 @@ export default class EntryAbility extends UIAbility {
       win.setWindowLayoutFullScreen(true);
       const avoid = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
       AppStorage.setOrCreate('topSafeHeight', px2vp(avoid.topRect.height));
+      // Bottom inset (gesture navigation bar) — pages pad their bottom bars by this.
+      const navAvoid = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR);
+      AppStorage.setOrCreate('bottomSafeHeight', px2vp(navAvoid.bottomRect.height));
       AppStorage.setOrCreate('screenWidthVp', px2vp(win.getWindowProperties().windowRect.width));
       win.on('avoidAreaChange', (data) => {
         if (data.type === window.AvoidAreaType.TYPE_SYSTEM) {
           AppStorage.setOrCreate('topSafeHeight', px2vp(data.area.topRect.height));
+        } else if (data.type === window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR) {
+          AppStorage.setOrCreate('bottomSafeHeight', px2vp(data.area.bottomRect.height));
         }
+      });
+      // Keyboard height: when the IME is up the window is already resized
+      // above it, so pages must drop their gesture-bar bottom padding.
+      win.on('keyboardHeightChange', (h: number) => {
+        AppStorage.setOrCreate('keyboardHeightVp', px2vp(h));
       });
       win.on('windowSizeChange', (size) => {
         AppStorage.setOrCreate('screenWidthVp', px2vp(size.width));

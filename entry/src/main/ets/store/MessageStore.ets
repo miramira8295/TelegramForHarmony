@@ -38,6 +38,7 @@ export class MessageStore {
   private peerUserId: number = 0;
   private groupId: number = 0;
   private lastReadInboxId: number = 0;
+  private lastReadOutboxId: number = 0;
   private unreadCount: number = 0;
   private viewedUpTo: number = 0;
   private chatResolved: boolean = false;
@@ -85,6 +86,13 @@ export class MessageStore {
     this.unsubs.push(this.client.onUpdate('updateUser', () => { this.resolveSenderAvatars(); this.resolveCommentAvatars(); }));
     this.unsubs.push(this.client.onUpdate('updateMessageInteractionInfo', (u: TdObject) => this.onInteractionInfo(u)));
     this.unsubs.push(this.client.onUpdate('updateChatOnlineMemberCount', (u: TdObject) => this.onOnlineCount(u)));
+    // A message got (un)pinned while the chat is open — re-resolve the pinned
+    // list so the banner reflects the new pin without re-entering the chat.
+    this.unsubs.push(this.client.onUpdate('updateMessageIsPinned', (u: TdObject) => {
+      if ((u['chat_id'] as number | undefined) === this.chatId) {
+        this.resolvePinned();
+      }
+    }));
     this.unsubs.push(this.client.onUpdate('updateMessageEdited', (u: TdObject) => this.onEdited(u)));
     this.requestedAroundMessageId = aroundMessageId !== undefined ? aroundMessageId : 0;
     this.resolveChat();
@@ -294,6 +302,78 @@ export class MessageStore {
     });
   }
 
+  // Shared sendMessage plumbing for media content types.
+  private sendContent(content: TdObject, tag: string): void {
+    const req: TdRequest = { '@type': 'sendMessage' };
+    req['chat_id'] = this.chatId;
+    req['input_message_content'] = content;
+    this.client.send(req).then((m: TdObject) => {
+      this.upsert(buildMessageEntry(m, this.users));
+      this.notify();
+    }).catch((e: TdError) => {
+      console.error(`MessageStore.${tag} failed: ${e.message}`);
+    });
+  }
+
+  sendPhoto(path: string, caption: string): void {
+    const inputFile: TdObject = { '@type': 'inputFileLocal' };
+    inputFile['path'] = path;
+    const content: TdObject = { '@type': 'inputMessagePhoto' };
+    content['photo'] = inputFile;
+    if (caption !== '') {
+      const ft: TdObject = { '@type': 'formattedText' };
+      ft['text'] = caption;
+      content['caption'] = ft;
+    }
+    this.sendContent(content, 'sendPhoto');
+  }
+
+  sendVideo(path: string, caption: string): void {
+    const inputFile: TdObject = { '@type': 'inputFileLocal' };
+    inputFile['path'] = path;
+    const content: TdObject = { '@type': 'inputMessageVideo' };
+    content['video'] = inputFile;
+    if (caption !== '') {
+      const ft: TdObject = { '@type': 'formattedText' };
+      ft['text'] = caption;
+      content['caption'] = ft;
+    }
+    this.sendContent(content, 'sendVideo');
+  }
+
+  // Send a sticker the user picked from an installed set (already on Telegram
+  // servers — reference it by TDLib file id).
+  sendSticker(fileId: number, width: number, height: number): void {
+    const inputFile: TdObject = { '@type': 'inputFileId' };
+    inputFile['id'] = fileId;
+    const content: TdObject = { '@type': 'inputMessageSticker' };
+    content['sticker'] = inputFile;
+    content['width'] = width;
+    content['height'] = height;
+    this.sendContent(content, 'sendSticker');
+  }
+
+  // Send a saved GIF (server-side file, referenced by id).
+  sendAnimation(fileId: number, width: number, height: number, durationSec: number): void {
+    const inputFile: TdObject = { '@type': 'inputFileId' };
+    inputFile['id'] = fileId;
+    const content: TdObject = { '@type': 'inputMessageAnimation' };
+    content['animation'] = inputFile;
+    content['width'] = width;
+    content['height'] = height;
+    content['duration'] = durationSec;
+    this.sendContent(content, 'sendAnimation');
+  }
+
+  sendVoiceNote(path: string, durationSec: number): void {
+    const inputFile: TdObject = { '@type': 'inputFileLocal' };
+    inputFile['path'] = path;
+    const content: TdObject = { '@type': 'inputMessageVoiceNote' };
+    content['voice_note'] = inputFile;
+    content['duration'] = durationSec;
+    this.sendContent(content, 'sendVoiceNote');
+  }
+
   private sendSimple(type: string): void {
     const req: TdRequest = { '@type': type };
     req['chat_id'] = this.chatId;
@@ -481,14 +561,30 @@ export class MessageStore {
     if ((u['chat_id'] as number | undefined) !== this.chatId) {
       return;
     }
-    const upto = (u['last_read_outbox_message_id'] as number | undefined) ?? 0;
-    this.messages = this.messages.map((e: MessageEntry) => {
-      if (e.isOutgoing && e.sendState === 'sent' && e.id <= upto) {
-        const c = cloneMessage(e); c.sendState = 'read'; return c;
+    this.lastReadOutboxId = (u['last_read_outbox_message_id'] as number | undefined) ?? 0;
+    this.notify(); // notify() applies the read marking centrally
+  }
+
+  // Outgoing messages at or below the outbox-read boundary become 'read'.
+  // Applied on every notify so history pages (already read long ago) get
+  // marked too, not only live updateChatReadOutbox events.
+  private applyReadOutbox(): void {
+    if (this.lastReadOutboxId <= 0) {
+      return;
+    }
+    let changed = false;
+    const mapped = this.messages.map((e: MessageEntry) => {
+      if (e.isOutgoing && e.sendState === 'sent' && e.id <= this.lastReadOutboxId) {
+        const c = cloneMessage(e);
+        c.sendState = 'read';
+        changed = true;
+        return c;
       }
       return e;
     });
-    this.notify();
+    if (changed) {
+      this.messages = mapped;
+    }
   }
 
   // --- photos ---
@@ -526,6 +622,10 @@ export class MessageStore {
             this.downloadThumb(e.photoFileId);
           }
         }
+      }
+      // Voice notes are small — download eagerly so tapping plays instantly.
+      if (e.contentType === 'voice' && e.videoFileId !== 0 && e.videoPath === '') {
+        this.requestVideoDownload(e.id); // deduped via videoFileToMsg
       }
       // Animated (TGS) sticker source file — small (<64KB), download eagerly so
       // the Lottie animation starts as soon as the message is visible.
@@ -901,6 +1001,7 @@ export class MessageStore {
     // Capture the unread boundary BEFORE loading history / marking read, so the
     // page can position at the first unread message even after we mark it read.
     this.lastReadInboxId = (chat['last_read_inbox_message_id'] as number | undefined) ?? 0;
+    this.lastReadOutboxId = (chat['last_read_outbox_message_id'] as number | undefined) ?? 0;
     this.unreadCount = (chat['unread_count'] as number | undefined) ?? 0;
     const photo = chat['photo'] as TdObject | undefined;
     const small = photo !== undefined ? (photo['small'] as TdObject | undefined) : undefined;
@@ -1172,6 +1273,7 @@ export class MessageStore {
   }
 
   private notify(): void {
+    this.applyReadOutbox();
     for (const l of this.msgSubs) {
       l(this.messages);
     }

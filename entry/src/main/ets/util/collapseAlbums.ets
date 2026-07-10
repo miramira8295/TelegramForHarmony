@@ -36,7 +36,8 @@ function aspectRatio(m: MessageEntry): number {
 // the key. Keys MUST change whenever rendered content changes: the LazyForEach
 // data source diffs by key and skips notifications for key-equal rows.
 function mutableSig(m: MessageEntry): string {
-  let s = `${m.commentCount}_${m.forwardFrom}`;
+  // videoPath: voice/file/video rows change rendering once the file lands.
+  let s = `${m.commentCount}_${m.forwardFrom}_${m.videoPath !== '' ? 'v' : ''}_${m.stickerPath !== '' ? 's' : ''}`;
   for (const r of m.reactions) {
     s += `|${r.emoji}${r.count}${r.isChosen ? 'c' : ''}`;
   }

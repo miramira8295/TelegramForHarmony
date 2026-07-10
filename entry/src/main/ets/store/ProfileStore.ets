@@ -53,10 +53,13 @@ export class ProfileStore {
   usernames: string[] = [];
   isContact: boolean = false;
   bio: string = '';
+  bioEntities: TdObject[] = []; // formattedText entities (links/mentions in the bio)
   personalChatId: number = 0;
   bizOpen: boolean = false;
   bizHoursText: string = '';
   bizAddress: string = '';
+  bizLat: number = 0;
+  bizLng: number = 0;
   chTitle: string = '';
   chInitials: string = '?';
   chAvatarPath: string = '';
@@ -174,6 +177,7 @@ export class ProfileStore {
     this.send(req, 'getUserFullInfo', (full: TdObject) => {
       const bioFt = full['bio'] as TdObject | undefined;
       this.bio = bioFt !== undefined ? ((bioFt['text'] as string | undefined) ?? '') : '';
+      this.bioEntities = bioFt !== undefined ? ((bioFt['entities'] as TdObject[] | undefined) ?? []) : [];
       // Bots have no bio; surface the bot description in its place.
       if (this.bio === '') {
         const botInfo = full['bot_info'] as TdObject | undefined;
@@ -213,6 +217,9 @@ export class ProfileStore {
     }
     const loc = biz['location'] as TdObject | undefined;
     this.bizAddress = loc !== undefined ? ((loc['address'] as string | undefined) ?? '') : '';
+    const point = loc !== undefined ? (loc['location'] as TdObject | undefined) : undefined;
+    this.bizLat = point !== undefined ? ((point['latitude'] as number | undefined) ?? 0) : 0;
+    this.bizLng = point !== undefined ? ((point['longitude'] as number | undefined) ?? 0) : 0;
   }
 
   private loadChannel(chatId: number): void {

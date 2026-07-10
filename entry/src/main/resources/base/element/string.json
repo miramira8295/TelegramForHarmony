@@ -11,6 +11,10 @@
     {
       "name": "EntryAbility_label",
       "value": "label"
+    },
+    {
+      "name": "mic_permission_reason",
+      "value": "录制语音消息需要使用麦克风"
     }
   ]
 }

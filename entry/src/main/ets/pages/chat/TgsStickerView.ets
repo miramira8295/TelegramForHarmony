@@ -24,7 +24,9 @@ export struct TgsStickerView {
   }
 
   private async startAnimation(): Promise<void> {
+    console.info(`TgsStickerView: start ${this.tgsPath}`);
     const json = await gunzipTgs(this.tgsPath);
+    console.info(`TgsStickerView: gunzip ${this.tgsPath} -> ${json.length} chars`);
     if (this.disposed) {
       return;
     }

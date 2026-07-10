@@ -26,6 +26,7 @@ export class ChatProfileStore {
   description: string = '';
   username: string = '';
   isChannel: boolean = false;
+  isMuted: boolean = false;
   members: MemberItem[] = [];
 
   private client: TdClient;
@@ -52,6 +53,12 @@ export class ChatProfileStore {
       const f = u['file'] as TdObject | undefined;
       if (f !== undefined) {
         this.applyFile(f);
+      }
+    }));
+    this.unsubs.push(this.client.onUpdate('updateChatNotificationSettings', (u: TdObject) => {
+      if ((u['chat_id'] as number | undefined) === this.chatId) {
+        this.applyNotificationSettings(u['notification_settings'] as TdObject | undefined);
+        this.notify();
       }
     }));
     this.loadChat();
@@ -116,6 +123,7 @@ export class ChatProfileStore {
       const big = photo !== undefined ? (photo['big'] as TdObject | undefined) : undefined;
       this.download(big !== undefined ? ((big['id'] as number | undefined) ?? 0) : 0,
         (p: string) => { this.avatarPath = p; });
+      this.applyNotificationSettings(chat['notification_settings'] as TdObject | undefined);
       const type = chat['type'] as TdObject | undefined;
       const typeName = type !== undefined ? ((type['@type'] as string | undefined) ?? '') : '';
       if (typeName === 'chatTypeSupergroup') {
@@ -127,6 +135,16 @@ export class ChatProfileStore {
       }
       this.notify();
     });
+  }
+
+  // Muted = explicit non-default settings with a positive mute window.
+  private applyNotificationSettings(ns: TdObject | undefined): void {
+    if (ns === undefined) {
+      return;
+    }
+    const useDefault = (ns['use_default_mute_for'] as boolean | undefined) ?? true;
+    const muteFor = (ns['mute_for'] as number | undefined) ?? 0;
+    this.isMuted = !useDefault && muteFor > 0;
   }
 
   private loadSupergroup(): void {

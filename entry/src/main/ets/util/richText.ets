@@ -99,6 +99,10 @@ function linkTargetFor(pos: number, runText: string, ents: Ent[]): string {
       if (e.type === 'textEntityTypeEmailAddress') {
         return `mailto:${runText}`;
       }
+      // Pseudo-scheme: the chat page turns hashtag taps into an in-chat search.
+      if (e.type === 'textEntityTypeHashtag' || e.type === 'textEntityTypeCashtag') {
+        return `tg-hashtag:${runText}`;
+      }
       return '';
     }
   }

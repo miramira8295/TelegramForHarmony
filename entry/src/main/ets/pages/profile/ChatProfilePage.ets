@@ -1,9 +1,10 @@
-import { router } from '@kit.ArkUI';
+import { router, promptAction } from '@kit.ArkUI';
 import { getTdClient } from '../../tdkit/Globals';
 import { ChatProfileStore, MemberItem } from '../../store/ChatProfileStore';
 import { AvatarView } from '../chatlist/AvatarView';
 import { TdObject, TdRequest, TdError } from '../../tdkit/TdTypes';
 import { COLOR_PRIMARY, COLOR_TEXT_PRIMARY, COLOR_TEXT_SECONDARY } from '../../util/theme';
+import { ExpandableText } from './ExpandableText';
 
 const CARD_BG: ResourceColor = Color.White;
 const CARD_RADIUS: number = 14;
@@ -21,6 +22,7 @@ struct ChatProfilePage {
   @State description: string = '';
   @State chatUsername: string = '';
   @State isChannel: boolean = false;
+  @State isMuted: boolean = false;
   @State members: MemberItem[] = [];
   private chatId: number = 0;
   private store: ChatProfileStore | null = null;
@@ -53,6 +55,7 @@ struct ChatProfilePage {
     this.description = s.description;
     this.chatUsername = s.username;
     this.isChannel = s.isChannel;
+    this.isMuted = s.isMuted;
     this.members = s.members;
   }
 
@@ -62,14 +65,21 @@ struct ChatProfilePage {
   }
 
   private toggleMute(): void {
+    const willMute = !this.isMuted;
     const settings: TdObject = { '@type': 'chatNotificationSettings' };
     settings['use_default_mute_for'] = false;
-    settings['mute_for'] = 4294967295; // "forever"
+    settings['mute_for'] = willMute ? 2147483647 : 0; // forever / unmute
     const req: TdRequest = { '@type': 'setChatNotificationSettings' };
     req['chat_id'] = this.chatId;
     req['notification_settings'] = settings;
-    getTdClient().send(req).catch((e: TdError) => {
+    getTdClient().send(req).then(() => {
+      // The updateChatNotificationSettings event also confirms this, but flip
+      // immediately so the button reacts without waiting for the round-trip.
+      this.isMuted = willMute;
+      promptAction.showToast({ message: willMute ? '已静音' : '已取消静音', duration: 1500 });
+    }).catch((e: TdError) => {
       console.error(`ChatProfilePage.setChatNotificationSettings failed: ${e.message}`);
+      promptAction.showToast({ message: '操作失败', duration: 1500 });
     });
   }
 
@@ -99,6 +109,32 @@ struct ChatProfilePage {
     .justifyContent(FlexAlign.Center)
     .backgroundColor(CARD_BG).borderRadius(CARD_RADIUS)
     .onClick(onTap);
+  }
+
+  // Dedicated builder (not the param-based actionButton): @Builder value
+  // params don't re-evaluate on @State change, so the icon/label would stick.
+  @Builder
+  muteButton() {
+    Column({ space: 5 }) {
+      Stack() {
+        if (this.isMuted) {
+          SymbolGlyph($r('sys.symbol.bell')).fontSize(22).fontColor([COLOR_PRIMARY])
+            .transition(TransitionEffect.OPACITY
+              .combine(TransitionEffect.scale({ x: 0.4, y: 0.4 }))
+              .animation({ duration: 220, curve: Curve.EaseOut }));
+        } else {
+          SymbolGlyph($r('sys.symbol.bell_slash')).fontSize(22).fontColor([COLOR_PRIMARY])
+            .transition(TransitionEffect.OPACITY
+              .combine(TransitionEffect.scale({ x: 0.4, y: 0.4 }))
+              .animation({ duration: 220, curve: Curve.EaseOut }));
+        }
+      }.height(24);
+      Text(this.isMuted ? '取消静音' : '静音').fontSize(12).fontColor(COLOR_PRIMARY);
+    }
+    .layoutWeight(1).height(62)
+    .justifyContent(FlexAlign.Center)
+    .backgroundColor(CARD_BG).borderRadius(CARD_RADIUS)
+    .onClick(() => { this.toggleMute(); });
   }
 
   @Builder
@@ -134,7 +170,7 @@ struct ChatProfilePage {
   actionsRow() {
     Row({ space: 8 }) {
       this.actionButton('sys.symbol.message', '消息', () => { this.openChat(); });
-      this.actionButton('sys.symbol.bell', '静音', () => { this.toggleMute(); });
+      this.muteButton();
       this.actionButton('sys.symbol.magnifyingglass', '搜索', () => {});
       this.actionButton('sys.symbol.more', '更多', () => {});
     }
@@ -147,7 +183,7 @@ struct ChatProfilePage {
       Column() {
         if (this.description !== '') {
           Column({ space: 2 }) {
-            Text(this.description).fontSize(15).fontColor(COLOR_TEXT_PRIMARY);
+            ExpandableText({ content: this.description });
             Text('简介').fontSize(12).fontColor(COLOR_TEXT_SECONDARY);
           }
           .alignItems(HorizontalAlign.Start)
@@ -159,7 +195,7 @@ struct ChatProfilePage {
           }
           Row() {
             Column({ space: 2 }) {
-              Text(`@${this.chatUsername}`).fontSize(15).fontColor(COLOR_PRIMARY);
+              Text(`@${this.chatUsername}`).fontSize(15).fontColor(COLOR_PRIMARY).copyOption(CopyOptions.LocalDevice);
               Text('链接').fontSize(12).fontColor(COLOR_TEXT_SECONDARY);
             }.alignItems(HorizontalAlign.Start).layoutWeight(1);
             SymbolGlyph($r('sys.symbol.qrcode')).fontSize(22).fontColor([COLOR_TEXT_SECONDARY]);

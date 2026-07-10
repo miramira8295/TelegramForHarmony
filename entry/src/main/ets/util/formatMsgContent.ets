@@ -191,6 +191,53 @@ export function formatMsgContent(message: TdObject): MsgContent {
       photoFullFileId: 0
     };
   }
+  // GIFs (messageAnimation) are MP4 loops — render through the video pipeline
+  // (thumbnail + tap to play fullscreen).
+  if (type === 'messageAnimation') {
+    const anim = content!['animation'] as TdObject | undefined;
+    const size: PhotoSize = videoThumbnail(anim);
+    const animFile = anim !== undefined ? (anim['animation'] as TdObject | undefined) : undefined;
+    const animSize = animFile !== undefined
+      ? (((animFile['size'] as number | undefined) ?? 0) || ((animFile['expected_size'] as number | undefined) ?? 0)) : 0;
+    return {
+      contentType: 'video',
+      text: captionText(content!),
+      photoFileId: size.fileId,
+      photoWidth: size.width,
+      photoHeight: size.height,
+      placeholderLabel: '',
+      entities: textEntities(content!['caption'] as TdObject | undefined),
+      linkSiteName: '', linkTitle: '', linkDescription: '', linkDescriptionEntities: [], linkPhotoFileId: 0, linkUrl: '',
+      videoDuration: anim !== undefined ? ((anim['duration'] as number | undefined) ?? 0) : 0,
+      videoFileId: animFile !== undefined ? ((animFile['id'] as number | undefined) ?? 0) : 0,
+      videoFileSize: animSize,
+      videoMimeType: anim !== undefined ? ((anim['mime_type'] as string | undefined) ?? '') : '',
+      videoFileName: anim !== undefined ? ((anim['file_name'] as string | undefined) ?? '') : '',
+      photoFullFileId: 0
+    };
+  }
+  // Voice notes also reuse the video* slots (duration / file id / size / mime
+  // / local path once downloaded).
+  if (type === 'messageVoiceNote') {
+    const vn = content!['voice_note'] as TdObject | undefined;
+    const voiceFile = vn !== undefined ? (vn['voice'] as TdObject | undefined) : undefined;
+    const voiceSize = voiceFile !== undefined
+      ? (((voiceFile['size'] as number | undefined) ?? 0) || ((voiceFile['expected_size'] as number | undefined) ?? 0)) : 0;
+    return {
+      contentType: 'voice',
+      text: captionText(content!),
+      photoFileId: 0, photoWidth: 0, photoHeight: 0,
+      placeholderLabel: '',
+      entities: textEntities(content!['caption'] as TdObject | undefined),
+      linkSiteName: '', linkTitle: '', linkDescription: '', linkDescriptionEntities: [], linkPhotoFileId: 0, linkUrl: '',
+      videoDuration: vn !== undefined ? ((vn['duration'] as number | undefined) ?? 0) : 0,
+      videoFileId: voiceFile !== undefined ? ((voiceFile['id'] as number | undefined) ?? 0) : 0,
+      videoFileSize: voiceSize,
+      videoMimeType: vn !== undefined ? ((vn['mime_type'] as string | undefined) ?? '') : '',
+      videoFileName: '',
+      photoFullFileId: 0
+    };
+  }
   // Documents reuse the video* slots (same semantics: a named, sized,
   // downloadable file with progress + local path once fetched).
   if (type === 'messageDocument') {
@@ -269,6 +316,9 @@ export function formatMsgContent(message: TdObject): MsgContent {
       };
     }
   }
+  // Diagnostics for the "bare 'Message' bubble" reports — identifies which
+  // TDLib content type still lacks a renderer.
+  console.info(`formatMsgContent: unhandled content type ${type ?? 'undefined'} (msg ${message['id']})`);
   return {
     contentType: 'other', text: '', photoFileId: 0, photoWidth: 0, photoHeight: 0, placeholderLabel: formatPreview(message), entities: [],
     linkSiteName: '', linkTitle: '', linkDescription: '', linkDescriptionEntities: [], linkPhotoFileId: 0, linkUrl: '',

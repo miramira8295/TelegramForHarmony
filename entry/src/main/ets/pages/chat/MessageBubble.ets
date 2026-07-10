@@ -3,6 +3,7 @@ import { TdObject } from '../../tdkit/TdTypes';
 import { AvatarView } from '../chatlist/AvatarView';
 import { TgsStickerView } from './TgsStickerView';
 import { WebmStickerView } from './WebmStickerView';
+import { VoiceBubble } from './VoiceBubble';
 import { formatTime } from '../../util/formatTime';
 import { formatFileSize } from '../../util/formatFileSize';
 import { parseFormattedText, RichSegment, RichRun } from '../../util/richText';
@@ -52,6 +53,7 @@ export struct MessageBubble {
   onReplyTap: (messageId: number) => void = (): void => {};
   onFileTap: (messageId: number) => void = (): void => {};
   onFileSave: (messageId: number) => void = (): void => {};
+  onVoiceTap: (messageId: number) => void = (): void => {};
   // Live arrival: slide the bubble in from below (never set for history rows).
   @Prop animateIn: boolean = false;
   @Prop showAvatar: boolean = true;     // last row of a same-sender run
@@ -129,7 +131,12 @@ export struct MessageBubble {
     } else if (this.msg.sendState === 'sent') {
       SymbolGlyph($r('sys.symbol.checkmark')).fontSize(12).fontColor([COLOR_TEXT_SECONDARY]);
     } else if (this.msg.sendState === 'read') {
-      SymbolGlyph($r('sys.symbol.checkmark')).fontSize(12).fontColor([COLOR_PRIMARY]);
+      // Double check: two overlapped checkmarks.
+      Row() {
+        SymbolGlyph($r('sys.symbol.checkmark')).fontSize(12).fontColor([COLOR_PRIMARY]);
+        SymbolGlyph($r('sys.symbol.checkmark')).fontSize(12).fontColor([COLOR_PRIMARY])
+          .margin({ left: -8 });
+      }
     } else if (this.msg.sendState === 'failed') {
       SymbolGlyph($r('sys.symbol.exclamationmark_circle')).fontSize(12).fontColor([Color.Red]);
     }
@@ -438,6 +445,16 @@ export struct MessageBubble {
         this.richContent(this.msg.text, this.msg.textEntities, this.inlineMaxW(),
           this.timeReserveInText());
       }
+    } else if (this.msg.contentType === 'voice') {
+      // Voice note with live playback progress — VoiceBubble subscribes to the
+      // shared player itself, so ticks don't depend on this row re-rendering.
+      VoiceBubble({
+        msgId: this.msg.id,
+        durationSec: this.msg.videoDuration,
+        isOutgoing: this.msg.isOutgoing,
+        voicePath: this.msg.videoPath,
+        onNeedDownload: (): void => { this.onVoiceTap(this.msg.id); }
+      });
     } else if (this.msg.contentType === 'file') {
       // Document card: icon circle + file name + size (download progress /
       // "已下载" once local). Tap opens/downloads; the top-right arrow saves a

@@ -4,6 +4,9 @@ import { ProfileStore, CommonGroup, StoryItem, GiftItem, AvailGift } from '../..
 import { AvatarView } from '../chatlist/AvatarView';
 import { TdObject, TdRequest, TdError } from '../../tdkit/TdTypes';
 import { COLOR_PRIMARY, COLOR_TEXT_PRIMARY, COLOR_TEXT_SECONDARY } from '../../util/theme';
+import { ExpandableText } from './ExpandableText';
+import { openUrl } from '../../util/openUrl';
+import { common } from '@kit.AbilityKit';
 
 const CARD_BG: ResourceColor = Color.White;
 const CARD_RADIUS: number = 14;
@@ -29,10 +32,13 @@ struct ProfilePage {
   @State usernames: string[] = [];
   @State isContact: boolean = false;
   @State bio: string = '';
+  @State bioEntities: TdObject[] = [];
   @State personalChatId: number = 0;
   @State bizOpen: boolean = false;
   @State bizHoursText: string = '';
   @State bizAddress: string = '';
+  @State bizLat: number = 0;
+  @State bizLng: number = 0;
   @State chTitle: string = '';
   @State chInitials: string = '?';
   @State chAvatarPath: string = '';
@@ -75,10 +81,13 @@ struct ProfilePage {
     this.usernames = s.usernames;
     this.isContact = s.isContact;
     this.bio = s.bio;
+    this.bioEntities = s.bioEntities;
     this.personalChatId = s.personalChatId;
     this.bizOpen = s.bizOpen;
     this.bizHoursText = s.bizHoursText;
     this.bizAddress = s.bizAddress;
+    this.bizLat = s.bizLat;
+    this.bizLng = s.bizLng;
     this.chTitle = s.chTitle;
     this.chInitials = s.chInitials;
     this.chAvatarPath = s.chAvatarPath;
@@ -145,13 +154,22 @@ struct ProfilePage {
   private toggleMute(): void {
     const settings: TdObject = { '@type': 'chatNotificationSettings' };
     settings['use_default_mute_for'] = false;
-    settings['mute_for'] = 4294967295; // "forever"
+    settings['mute_for'] = 2147483647; // "forever"
     const req: TdRequest = { '@type': 'setChatNotificationSettings' };
     req['chat_id'] = this.userId;
     req['notification_settings'] = settings;
     getTdClient().send(req).catch((e: TdError) => {
       console.error(`ProfilePage.setChatNotificationSettings failed: ${e.message}`);
     });
+  }
+
+  // 位置 tap → system map app via geo: URI (coordinates when TDLib provides
+  // them, otherwise an address query).
+  private openMap(): void {
+    const hasCoords = this.bizLat !== 0 || this.bizLng !== 0;
+    const q = encodeURIComponent(this.bizAddress);
+    const uri = hasCoords ? `geo:${this.bizLat},${this.bizLng}?q=${q}` : `geo:0,0?q=${q}`;
+    openUrl(getContext(this) as common.UIAbilityContext, uri);
   }
 
   private storyCell(): number {
@@ -190,7 +208,7 @@ struct ProfilePage {
   @Builder
   infoRow(value: string, label: string, valueColor: ResourceColor) {
     Column({ space: 2 }) {
-      Text(value).fontSize(15).fontColor(valueColor);
+      Text(value).fontSize(15).fontColor(valueColor).copyOption(CopyOptions.LocalDevice);
       Text(label).fontSize(12).fontColor(COLOR_TEXT_SECONDARY);
     }
     .alignItems(HorizontalAlign.Start)
@@ -284,7 +302,13 @@ struct ProfilePage {
           if (this.phone !== '') {
             this.sectionDivider();
           }
-          this.infoRow(this.bio, '个人简介', COLOR_TEXT_PRIMARY);
+          Column({ space: 2 }) {
+            ExpandableText({ content: this.bio, entities: this.bioEntities });
+            Text('个人简介').fontSize(12).fontColor(COLOR_TEXT_SECONDARY);
+          }
+          .alignItems(HorizontalAlign.Start)
+          .width('100%')
+          .padding({ top: 8, bottom: 8 });
         }
         if (this.usernames.length > 0) {
           if (this.phone !== '' || this.bio !== '') {
@@ -292,7 +316,7 @@ struct ProfilePage {
           }
           Row() {
             Column({ space: 2 }) {
-              Text(`@${this.usernames[0]}`).fontSize(15).fontColor(COLOR_PRIMARY);
+              Text(`@${this.usernames[0]}`).fontSize(15).fontColor(COLOR_PRIMARY).copyOption(CopyOptions.LocalDevice);
               if (this.usernames.length > 1) {
                 Text(`同时 ${this.usernames.slice(1).map((u: string) => `@${u}`).join(', ')}`)
                   .fontSize(13).fontColor(COLOR_TEXT_SECONDARY);
@@ -324,7 +348,15 @@ struct ProfilePage {
           if (this.phone !== '' || this.bio !== '' || this.usernames.length > 0 || this.bizHoursText !== '') {
             this.sectionDivider();
           }
-          this.infoRow(this.bizAddress, '位置', COLOR_TEXT_PRIMARY);
+          Column({ space: 2 }) {
+            Text(this.bizAddress).fontSize(15).fontColor(COLOR_PRIMARY)
+              .copyOption(CopyOptions.LocalDevice);
+            Text('位置 · 点击打开地图').fontSize(12).fontColor(COLOR_TEXT_SECONDARY);
+          }
+          .alignItems(HorizontalAlign.Start)
+          .width('100%')
+          .padding({ top: 8, bottom: 8 })
+          .onClick(() => { this.openMap(); });
         }
         if (this.phone === '' && this.bio === '' && this.usernames.length === 0
           && this.bizHoursText === '' && this.bizAddress === '') {

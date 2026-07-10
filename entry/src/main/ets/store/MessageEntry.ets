@@ -213,6 +213,15 @@ function systemMessageLabel(message: TdObject, users: UserStore): string {
   if (type === 'messageChatJoinByLink') {
     return `${who} 通过邀请链接加入群组`;
   }
+  if (type === 'messageChatSetMessageAutoDeleteTime') {
+    const secs = (content!['message_auto_delete_time'] as number | undefined) ?? 0;
+    if (secs <= 0) {
+      return `${who} 关闭了自动删除`;
+    }
+    const label = secs >= 86400 ? `${Math.round(secs / 86400)} 天`
+      : (secs >= 3600 ? `${Math.round(secs / 3600)} 小时` : `${Math.round(secs / 60)} 分钟`);
+    return `${who} 将消息自动删除时间设为 ${label}`;
+  }
   if (type === 'messageChatJoinByRequest') {
     return `${who} 加入了群组`;
   }
