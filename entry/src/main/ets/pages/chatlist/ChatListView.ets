@@ -6,6 +6,7 @@ import { COLOR_TEXT_SECONDARY } from '../../util/theme';
 @Component
 export struct ChatListView {
   @Prop listKey: string;
+  @StorageProp('bottomSafeHeight') bottomSafe: number = 0;
   @State chats: ChatEntry[] = [];
   @State nowSec: number = 0;
   private unsubscribe: (() => void) | null = null;
@@ -44,6 +45,7 @@ export struct ChatListView {
         }, (item: ChatEntry, index: number) => `${item.id}_${index}_${item.unreadCount}_${item.isMuted}_${item.lastMessageDate}_${item.lastMessageText}_${item.lastSenderName}_${item.avatarPath}_${item.title}`);
       }
       .layoutWeight(1).width('100%')
+      .contentEndOffset(this.bottomSafe + 88)
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
       .onReachEnd(() => { getChatStore().loadMore(this.listKey); });
     }

@@ -1,6 +1,7 @@
 import { TdObject } from '../tdkit/TdTypes';
 import { UserStore } from './UserStore';
 import { formatMsgContent, MsgContent } from '../util/formatMsgContent';
+import { SERVICE_LABELS } from '../util/formatPreview';
 
 export interface MessageEntry {
   id: number;
@@ -235,7 +236,34 @@ function systemMessageLabel(message: TdObject, users: UserStore): string {
     const title = (content!['title'] as string | undefined) ?? '';
     return `${who} 创建了群组"${title}"`;
   }
+  // Channel direct-message (paid DM) settings — show the concrete star price /
+  // enabled state, matching the official client's wording.
+  if (type === 'messageDirectMessagePriceChanged') {
+    const enabled = (content!['is_enabled'] as boolean | undefined) ?? false;
+    const stars = (content!['paid_message_star_count'] as number | undefined) ?? 0;
+    if (!enabled) {
+      return '频道已关闭私信。';
+    }
+    return stars > 0 ? `此频道允许每条 ${stars} 颗星星的私信。` : '频道已启用私信。';
+  }
+  // Fallback for other service messages (video chats, gifts, giveaways, forum
+  // topics, payments, …) → shown as a centered pill.
+  const svc: string | undefined = type !== undefined ? SERVICE_LABELS[type] : undefined;
+  if (svc !== undefined) {
+    return svc;
+  }
   return '';
+}
+
+// Content types intentionally hidden from the timeline. Empty by default — all
+// service messages are now surfaced as centered pills via systemMessageLabel /
+// SERVICE_LABELS instead of being hidden.
+const HIDDEN_CONTENT_TYPES: string[] = [];
+
+function isHiddenContent(message: TdObject): boolean {
+  const content = message['content'] as TdObject | undefined;
+  const t = content !== undefined ? (content['@type'] as string | undefined) : undefined;
+  return t !== undefined && HIDDEN_CONTENT_TYPES.indexOf(t) >= 0;
 }
 
 function reactions(message: TdObject): ReactionInfo[] {
@@ -338,6 +366,14 @@ export function buildMessageEntry(message: TdObject, users: UserStore): MessageE
   const fwd: FwdOrigin = forwardOrigin(message, users);
   const cmt: CommentInfo = commentInfo(message);
   const sysLabel = systemMessageLabel(message, users);
+  const hidden = isHiddenContent(message);
+  // Log genuinely unhandled content types — not hidden, not given a description
+  // (still the bare 'Message' fallback) — so missing types surface in hilog.
+  if (!hidden && c.contentType === 'other' && c.placeholderLabel === 'Message') {
+    const rc = message['content'] as TdObject | undefined;
+    const rt = rc !== undefined ? ((rc['@type'] as string | undefined) ?? 'unknown') : 'unknown';
+    console.warn(`[UNHANDLED_MSG] type=${rt} id=${(message['id'] as number | undefined) ?? 0}`);
+  }
   return {
     id: (message['id'] as number | undefined) ?? 0,
     isOutgoing,
@@ -347,7 +383,7 @@ export function buildMessageEntry(message: TdObject, users: UserStore): MessageE
     senderInitials: name.length > 0 ? name.substring(0, 1).toUpperCase() : '?',
     senderAvatarPath: '',
     date: (message['date'] as number | undefined) ?? 0,
-    contentType: sysLabel !== '' ? 'system' : c.contentType,
+    contentType: hidden ? 'hidden' : (sysLabel !== '' ? 'system' : c.contentType),
     text: c.text,
     photoFileId: c.photoFileId,
     photoPath: '',

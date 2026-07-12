@@ -44,7 +44,12 @@ export function bareUsernameOf(url: string): string {
   if (slash < 0) {
     return '';
   }
-  const parts = rest.substring(slash + 1).split('/').filter((p: string) => p.length > 0);
+  // Drop any query/fragment (bot start params, ?comment=, #anchor, …) before
+  // splitting — otherwise t.me/<name>?start=xxx isn't recognized as a username
+  // link and wrongly falls through to the browser.
+  const seg = rest.substring(slash + 1);
+  const clean = seg.split('?')[0].split('#')[0];
+  const parts = clean.split('/').filter((p: string) => p.length > 0);
   if (parts.length !== 1 || parts[0].startsWith('+') || parts[0].toLowerCase() === 'joinchat') {
     return '';
   }

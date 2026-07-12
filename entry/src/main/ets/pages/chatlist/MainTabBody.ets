@@ -9,6 +9,7 @@ const ARCHIVE_ROW_HEIGHT: number = 56;
 @Preview
 @Component
 export struct MainTabBody {
+  @StorageProp('bottomSafeHeight') bottomSafe: number = 0;
   @State chats: ChatEntry[] = [];
   @State nowSec: number = 0;
   @State showArchive: boolean = false;
@@ -58,6 +59,7 @@ export struct MainTabBody {
       }, (item: ChatEntry, index: number) => `${item.id}_${index}_${item.unreadCount}_${item.isMuted}_${item.lastMessageDate}_${item.lastMessageText}_${item.lastSenderName}_${item.avatarPath}_${item.title}`);
     }
     .layoutWeight(1).width('100%')
+    .contentEndOffset(this.bottomSafe + 88)
     .onReachEnd(() => { getChatStore().loadMore('main'); });
   }
 

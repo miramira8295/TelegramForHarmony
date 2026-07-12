@@ -54,6 +54,7 @@ export class ProfileStore {
   isContact: boolean = false;
   bio: string = '';
   bioEntities: TdObject[] = []; // formattedText entities (links/mentions in the bio)
+  birthday: string = ''; // "3月1日" from userFullInfo.birthdate, '' if not shared
   personalChatId: number = 0;
   bizOpen: boolean = false;
   bizHoursText: string = '';
@@ -186,6 +187,12 @@ export class ProfileStore {
         this.bio = botDesc !== '' ? botDesc : botFull;
       }
       this.personalChatId = (full['personal_chat_id'] as number | undefined) ?? 0;
+      const bd = full['birthdate'] as TdObject | undefined;
+      if (bd !== undefined) {
+        const day = (bd['day'] as number | undefined) ?? 0;
+        const month = (bd['month'] as number | undefined) ?? 0;
+        this.birthday = (day > 0 && month > 0) ? `${month}月${day}日` : '';
+      }
       this.parseBusiness(full['business_info'] as TdObject | undefined);
       if (this.personalChatId !== 0) {
         this.loadChannel(this.personalChatId);

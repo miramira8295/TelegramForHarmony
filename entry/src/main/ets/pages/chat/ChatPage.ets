@@ -1,4 +1,5 @@
 import { router, promptAction } from '@kit.ArkUI';
+import { pasteboard } from '@kit.BasicServicesKit';
 import { common } from '@kit.AbilityKit';
 import { picker, fileIo as fs } from '@kit.CoreFileKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
@@ -29,6 +30,16 @@ const PINNED_SEG_MAX: number = 5;
 // page instead of scrolling row by row through the loaded history.
 const JUMP_RELOAD_THRESHOLD: number = 40;
 const VIEWER_CHROME_BG: string = '#6e3e3e40';
+// Emoji offered in the full reaction picker (opened from the long-press menu's
+// chevron). Ordered roughly like the official client's reaction sheet.
+const REACTION_EMOJIS: string[] = [
+  '❤️', '👍', '👎', '🔥', '🥰', '👏', '😁', '🤔', '🤯', '😱', '🤬', '😢',
+  '🎉', '🤩', '🤮', '💩', '🙏', '👌', '🕊️', '🤡', '🥱', '🥴', '😍', '🐳',
+  '❤️‍🔥', '🌚', '🌭', '💯', '🤣', '⚡', '🍌', '🏆', '💔', '🤨', '😐', '🍓',
+  '🍾', '💋', '🖕', '😈', '😴', '😭', '🤓', '👻', '👀', '🎃', '🙈', '😇',
+  '😨', '🤝', '✍️', '🤗', '🫡', '🎅', '🎄', '☃️', '💅', '🤪', '🗿', '🆒',
+  '💘', '🙉', '🦄', '😘', '💊', '🙊', '😎', '👾', '🤷', '😡'
+];
 
 @Entry
 @Preview
@@ -47,6 +58,11 @@ struct ChatPage {
   @State avatarPath: string = '';
   @State initials: string = '?';
   @State draft: string = '';
+  @State replyToId: number = 0;      // message being replied to (0 = none)
+  @State replyToName: string = '';
+  @State replyToText: string = '';
+  @State showReactionSheet: boolean = false; // full emoji reaction picker
+  @State reactionTargetId: number = 0;
   @State nowSec: number = 0;
   @State viewerMsgId: number = 0;
   @State chromeVisible: boolean = true;
@@ -127,6 +143,7 @@ struct ChatPage {
   private unsubChat: (() => void) | null = null;
   private unsubPinned: (() => void) | null = null;
   private unsubHeaderAvatar: (() => void) | null = null;
+  private unsubHeaderTitle: (() => void) | null = null;
 
   aboutToAppear(): void {
     this.nowSec = Math.floor(Date.now() / 1000);
@@ -270,6 +287,13 @@ struct ChatPage {
       }
     });
     this.unsubSub = store.subscribeSubtitle((s: string) => { this.subtitle = s; });
+    this.unsubHeaderTitle = store.subscribeHeaderTitle((t: string) => {
+      // Fallback header for chats not yet in ChatStore (e.g. opened by t.me link).
+      if (t !== '' && this.title === '') {
+        this.title = t;
+        this.initials = t.substring(0, 1).toUpperCase();
+      }
+    });
     this.unsubHeaderAvatar = store.subscribeHeaderAvatar((p: string) => {
       if (p !== '') {
         this.avatarPath = p;
@@ -305,6 +329,7 @@ struct ChatPage {
     if (this.unsubChat !== null) { this.unsubChat(); this.unsubChat = null; }
     if (this.unsubPinned !== null) { this.unsubPinned(); this.unsubPinned = null; }
     if (this.unsubHeaderAvatar !== null) { this.unsubHeaderAvatar(); this.unsubHeaderAvatar = null; }
+    if (this.unsubHeaderTitle !== null) { this.unsubHeaderTitle(); this.unsubHeaderTitle = null; }
     if (this.store !== null) { this.store.close(); this.store = null; }
   }
 
@@ -1480,10 +1505,85 @@ struct ChatPage {
       return;
     }
     this.atBottom = true; // sending my own message always follows to the bottom
-    this.store.send(t);
+    this.store.send(t, this.replyToId);
     this.draft = '';
+    this.clearReply();
     this.mentionItems = [];
     this.commandItems = [];
+  }
+
+  private findMsg(messageId: number): MessageEntry | null {
+    for (const m of this.messages) {
+      if (m.id === messageId) {
+        return m;
+      }
+    }
+    return null;
+  }
+
+  private clearReply(): void {
+    this.replyToId = 0;
+    this.replyToName = '';
+    this.replyToText = '';
+  }
+
+  // Long-press menu: reply. Populates the reply preview above the input bar;
+  // doSend() then attaches reply_to.
+  private startReply(messageId: number): void {
+    const m = this.findMsg(messageId);
+    if (m === null) {
+      return;
+    }
+    this.replyToId = messageId;
+    this.replyToName = m.senderName !== '' ? m.senderName : this.title;
+    this.replyToText = m.text !== '' ? m.text : '[媒体]';
+  }
+
+  private copyMessageText(messageId: number): void {
+    const m = this.findMsg(messageId);
+    if (m === null || m.text === '') {
+      promptAction.showToast({ message: '没有可复制的文本', duration: 1500 });
+      return;
+    }
+    const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, m.text);
+    pasteboard.getSystemPasteboard().setData(data).then(() => {
+      promptAction.showToast({ message: '已复制', duration: 1200 });
+    }).catch((e: Object) => { console.error(`ChatPage.copyMessageText failed: ${JSON.stringify(e)}`); });
+  }
+
+  private copyMessageLink(messageId: number): void {
+    if (this.store === null) {
+      return;
+    }
+    this.store.messageLink(messageId, (url: string) => {
+      if (url === '') {
+        promptAction.showToast({ message: '无法获取链接（可能是私密聊天）', duration: 1800 });
+        return;
+      }
+      const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, url);
+      pasteboard.getSystemPasteboard().setData(data).then(() => {
+        promptAction.showToast({ message: '链接已复制', duration: 1200 });
+      }).catch((e: Object) => { console.error(`ChatPage.copyMessageLink failed: ${JSON.stringify(e)}`); });
+    });
+  }
+
+  private toggleReaction(messageId: number, emoji: string, isChosen: boolean): void {
+    if (this.store !== null) {
+      this.store.setReaction(messageId, emoji, isChosen);
+    }
+  }
+
+  private openReactionSheet(messageId: number): void {
+    this.reactionTargetId = messageId;
+    this.showReactionSheet = true;
+  }
+
+  // Pick from the full emoji sheet — always adds the reaction to the target.
+  private pickReaction(emoji: string): void {
+    if (this.store !== null && this.reactionTargetId !== 0) {
+      this.store.setReaction(this.reactionTargetId, emoji, false);
+    }
+    this.showReactionSheet = false;
   }
 
   @Builder
@@ -1595,6 +1695,54 @@ struct ChatPage {
     .constraintSize({ maxHeight: 240 })
     .backgroundColor(Color.White)
     .divider({ strokeWidth: 0.7, color: '#EDEDED', startMargin: 14, endMargin: 14 });
+  }
+
+  // Reply preview strip above the input bar (Telegram style): accent bar, sender
+  // name, message excerpt, and an ✕ to cancel.
+  @Builder
+  replyPreview() {
+    Row({ space: 10 }) {
+      SymbolGlyph($r('sys.symbol.arrowshape_turn_up_left')).fontSize(20).fontColor([COLOR_PRIMARY]);
+      Column({ space: 1 }) {
+        Text(this.replyToName).fontSize(13).fontColor(COLOR_PRIMARY).fontWeight(FontWeight.Medium)
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis });
+        Text(this.replyToText).fontSize(13).fontColor(COLOR_TEXT_SECONDARY)
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis });
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1);
+      SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([COLOR_TEXT_SECONDARY])
+        .onClick(() => { this.clearReply(); });
+    }
+    .width('100%').padding({ left: 16, right: 16, top: 7, bottom: 7 })
+    .backgroundColor(Color.White)
+    .border({ width: { top: 0.7 }, color: '#EDEDED' })
+    .alignItems(VerticalAlign.Center);
+  }
+
+  // Full emoji reaction picker (opened from the long-press menu chevron): a
+  // bottom sheet grid; tapping an emoji adds it as a reaction to the target.
+  @Builder
+  reactionSheet() {
+    Column() {
+      Column().layoutWeight(1)
+        .onClick(() => { this.showReactionSheet = false; });
+      Column({ space: 8 }) {
+        Row().width(40).height(4).borderRadius(2).backgroundColor('#D0D0D0');
+        Text('选择表情回应').fontSize(15).fontColor(COLOR_TEXT_PRIMARY).fontWeight(FontWeight.Medium);
+        Scroll() {
+          Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
+            ForEach(REACTION_EMOJIS, (e: string) => {
+              Text(e).fontSize(28).padding(7)
+                .onClick(() => { this.pickReaction(e); });
+            }, (e: string) => e);
+          }.width('100%');
+        }.constraintSize({ maxHeight: 300 }).scrollBar(BarState.Off);
+      }
+      .width('100%').padding({ left: 10, right: 10, top: 10, bottom: 20 + this.bottomInset() })
+      .backgroundColor(Color.White)
+      .borderRadius({ topLeft: 18, topRight: 18 });
+    }
+    .width('100%').height('100%')
+    .backgroundColor('#00000066');
   }
 
   @Builder
@@ -1813,6 +1961,14 @@ struct ChatPage {
                 onFileTap: (id: number): void => { this.onFileTap(id); },
                 onFileSave: (id: number): void => { this.onFileSave(id); },
                 onVoiceTap: (id: number): void => { this.onVoiceTap(id); },
+                onSetReaction: (id: number, emoji: string, chosen: boolean): void => { this.toggleReaction(id, emoji, chosen); },
+                onReplyTo: (id: number): void => { this.startReply(id); },
+                onCopyText: (id: number): void => { this.copyMessageText(id); },
+                onCopyLink: (id: number): void => { this.copyMessageLink(id); },
+                onForwardMsg: (id: number): void => { promptAction.showToast({ message: '转发功能开发中', duration: 1500 }); },
+                onReportMsg: (id: number): void => { promptAction.showToast({ message: '举报功能开发中', duration: 1500 }); },
+                onSelectMsg: (id: number): void => { promptAction.showToast({ message: '多选功能开发中', duration: 1500 }); },
+                onOpenReactions: (id: number): void => { this.openReactionSheet(id); },
                 showAvatar: g.showAvatar,
                 showSenderName: g.showSenderName,
                 animateIn: this.freshSinceId !== 0 && g.head.id > this.freshSinceId });
@@ -1888,6 +2044,9 @@ struct ChatPage {
           .width('100%').padding({ left: 20, right: 20, top: 12, bottom: 4 + this.bottomInset() })
           .backgroundColor(Color.White);
         } else {
+          if (this.replyToId !== 0) {
+            this.replyPreview();
+          }
           this.inputBar();
         }
       }
@@ -1933,6 +2092,9 @@ struct ChatPage {
         .justifyContent(FlexAlign.End)
         .padding({ bottom: this.inputBarH })
         .hitTestBehavior(HitTestMode.Transparent);
+      }
+      if (this.showReactionSheet) {
+        this.reactionSheet();
       }
       // Search result navigation: ∧ older match / ∨ newer match, right edge.
       if (this.searchMode && this.searchResults.length > 0) {

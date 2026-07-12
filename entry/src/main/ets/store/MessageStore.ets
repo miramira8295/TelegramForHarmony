@@ -48,6 +48,8 @@ export class MessageStore {
   private chatPhotoFileId: number = 0;
   private chatPhotoPath: string = '';
   private headerAvatarSubs: SubtitleListener[] = [];
+  private chatTitle: string = '';
+  private headerTitleSubs: SubtitleListener[] = [];
   private senderAvatarPaths: Map<string, string> = new Map();
   private senderRequested: Set<string> = new Set();
   private avatarFileToSender: Map<number, string> = new Map();
@@ -178,6 +180,20 @@ export class MessageStore {
     return (): void => { this.headerAvatarSubs = this.headerAvatarSubs.filter((x: SubtitleListener) => x !== l); };
   }
 
+  // Chat title resolved from getChat — a fallback header title/initials for chats
+  // opened by t.me link that aren't in ChatStore's cache yet.
+  subscribeHeaderTitle(l: SubtitleListener): () => void {
+    this.headerTitleSubs = [...this.headerTitleSubs, l];
+    l(this.chatTitle);
+    return (): void => { this.headerTitleSubs = this.headerTitleSubs.filter((x: SubtitleListener) => x !== l); };
+  }
+
+  private notifyHeaderTitle(): void {
+    for (const l of this.headerTitleSubs) {
+      l(this.chatTitle);
+    }
+  }
+
   private notifyHeaderAvatar(): void {
     for (const l of this.headerAvatarSubs) {
       l(this.chatPhotoPath);
@@ -263,19 +279,64 @@ export class MessageStore {
     });
   }
 
-  send(text: string): void {
+  send(text: string, replyToId: number = 0): void {
     const ft: TdObject = { '@type': 'formattedText' };
     ft['text'] = text;
     const content: TdObject = { '@type': 'inputMessageText' };
     content['text'] = ft;
     const req: TdRequest = { '@type': 'sendMessage' };
     req['chat_id'] = this.chatId;
+    if (replyToId !== 0) {
+      const rt: TdObject = { '@type': 'inputMessageReplyToMessage' };
+      rt['message_id'] = replyToId;
+      req['reply_to'] = rt;
+    }
     req['input_message_content'] = content;
     this.client.send(req).then((m: TdObject) => {
       this.upsert(buildMessageEntry(m, this.users));
+      this.resolveReplies();
       this.notify();
     }).catch((e: TdError) => {
       console.error(`MessageStore.send failed: ${e.message}`);
+    });
+  }
+
+  // Toggle an emoji reaction on a message. TDLib pushes the updated counts back
+  // via updateMessageInteractionInfo, which onInteraction() already applies.
+  setReaction(messageId: number, emoji: string, isChosen: boolean): void {
+    const rt: TdObject = { '@type': 'reactionTypeEmoji' };
+    rt['emoji'] = emoji;
+    if (isChosen) {
+      const req: TdRequest = { '@type': 'removeMessageReaction' };
+      req['chat_id'] = this.chatId;
+      req['message_id'] = messageId;
+      req['reaction_type'] = rt;
+      this.client.send(req).catch((e: TdError) => {
+        console.error(`MessageStore.removeMessageReaction failed: ${e.message}`);
+      });
+    } else {
+      const req: TdRequest = { '@type': 'addMessageReaction' };
+      req['chat_id'] = this.chatId;
+      req['message_id'] = messageId;
+      req['reaction_type'] = rt;
+      req['is_big'] = false;
+      req['update_recent_reactions'] = true;
+      this.client.send(req).catch((e: TdError) => {
+        console.error(`MessageStore.addMessageReaction failed: ${e.message}`);
+      });
+    }
+  }
+
+  // Resolve a public/private t.me link for a message (used by 拷贝消息链接).
+  messageLink(messageId: number, cb: (url: string) => void): void {
+    const req: TdRequest = { '@type': 'getMessageLink' };
+    req['chat_id'] = this.chatId;
+    req['message_id'] = messageId;
+    this.client.send(req).then((res: TdObject) => {
+      cb((res['link'] as string | undefined) ?? '');
+    }).catch((e: TdError) => {
+      console.error(`MessageStore.getMessageLink failed: ${e.message}`);
+      cb('');
     });
   }
 
@@ -455,6 +516,7 @@ export class MessageStore {
     }
     this.messages = this.messages.filter((e: MessageEntry) => e.id !== oldId);
     this.upsert(buildMessageEntry(m, this.users));
+    this.resolveReplies();
     this.notify();
   }
 
@@ -1007,6 +1069,8 @@ export class MessageStore {
     const small = photo !== undefined ? (photo['small'] as TdObject | undefined) : undefined;
     this.chatPhotoFileId = small !== undefined ? ((small['id'] as number | undefined) ?? 0) : 0;
     this.downloadChatPhoto();
+    this.chatTitle = (chat['title'] as string | undefined) ?? '';
+    this.notifyHeaderTitle();
     const type = chat['type'] as TdObject | undefined;
     if (type !== undefined) {
       const t = type['@type'] as string | undefined;

@@ -3,7 +3,7 @@ import { getAuthService } from '../tdkit/Globals';
 import { PhoneNumberPage } from './login/PhoneNumberPage';
 import { CodePage } from './login/CodePage';
 import { PasswordPage } from './login/PasswordPage';
-import { ChatListPage } from './chatlist/ChatListPage';
+import { MainScreen } from './main/MainScreen';
 
 @Entry
 @Preview
@@ -27,7 +27,7 @@ struct Index {
       } else if (this.stage === AuthStage.WaitPassword) {
         PasswordPage()
       } else if (this.stage === AuthStage.Ready) {
-        ChatListPage()
+        MainScreen()
       } else if (this.stage === AuthStage.LoggedOut) {
         PhoneNumberPage()
       } else {

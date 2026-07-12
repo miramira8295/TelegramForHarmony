@@ -15,6 +15,9 @@ const STICKER_MAX: number = 160;
 const MEDIA_MAX_WIDTH: number = 280;
 const MEDIA_MAX_HEIGHT_RATIO: number = 1.2;
 const LINK_PREVIEW_HEIGHT_RATIO: number = 0.62;
+// Quick reactions shown in the long-press menu's top row (tap the chevron to
+// open the full emoji picker).
+const QUICK_REACTIONS: string[] = ['❤️', '👍', '👎', '🔥', '🥰', '👏'];
 
 interface MediaBox {
   width: number;
@@ -55,6 +58,15 @@ export struct MessageBubble {
   onFileTap: (messageId: number) => void = (): void => {};
   onFileSave: (messageId: number) => void = (): void => {};
   onVoiceTap: (messageId: number) => void = (): void => {};
+  // Long-press context menu actions.
+  onSetReaction: (messageId: number, emoji: string, isChosen: boolean) => void = (): void => {};
+  onReplyTo: (messageId: number) => void = (): void => {};
+  onCopyText: (messageId: number) => void = (): void => {};
+  onCopyLink: (messageId: number) => void = (): void => {};
+  onForwardMsg: (messageId: number) => void = (): void => {};
+  onReportMsg: (messageId: number) => void = (): void => {};
+  onSelectMsg: (messageId: number) => void = (): void => {};
+  onOpenReactions: (messageId: number) => void = (): void => {};
   // Live arrival: slide the bubble in from below (never set for history rows).
   @Prop animateIn: boolean = false;
   @Prop showAvatar: boolean = true;     // last row of a same-sender run
@@ -378,6 +390,60 @@ export struct MessageBubble {
     }.constraintSize({ maxWidth: this.inlineMaxW() }).margin({ top: 4 });
   }
 
+  private reactionChosen(emoji: string): boolean {
+    for (const r of this.msg.reactions) {
+      if (r.emoji === emoji) {
+        return r.isChosen;
+      }
+    }
+    return false;
+  }
+
+  @Builder
+  menuRow(icon: string, label: string, danger: boolean, onTap: () => void) {
+    Row({ space: 14 }) {
+      SymbolGlyph($r(icon)).fontSize(19).fontColor([danger ? '#FF3B30' : COLOR_BUBBLE_TEXT]);
+      Text(label).fontSize(16).fontColor(danger ? '#FF3B30' : COLOR_BUBBLE_TEXT).layoutWeight(1);
+    }
+    .width('100%').padding({ left: 16, right: 16, top: 11, bottom: 11 })
+    .alignItems(VerticalAlign.Center)
+    .onClick(onTap);
+  }
+
+  // Long-press context menu: quick-reaction row (tap an emoji to toggle it, the
+  // chevron opens the full picker) over the standard message actions.
+  @Builder
+  msgContextMenu() {
+    Column() {
+      Row({ space: 2 }) {
+        ForEach(QUICK_REACTIONS, (e: string) => {
+          Text(e).fontSize(24)
+            .padding({ left: 3, right: 3, top: 4, bottom: 4 })
+            .onClick(() => { this.onSetReaction(this.msg.id, e, this.reactionChosen(e)); });
+        }, (e: string) => e);
+        Blank();
+        // Round "expand" button → opens the full emoji reaction picker.
+        Row() {
+          SymbolGlyph($r('sys.symbol.chevron_down')).fontSize(15).fontColor([COLOR_BUBBLE_TEXT]);
+        }
+        .width(30).height(30).borderRadius(15).backgroundColor('#0000000F')
+        .justifyContent(FlexAlign.Center)
+        .onClick(() => { this.onOpenReactions(this.msg.id); });
+      }
+      .width('100%').padding({ left: 12, right: 10, top: 8, bottom: 8 })
+      .alignItems(VerticalAlign.Center);
+      Divider().color('#EDEDED').strokeWidth(0.7);
+      this.menuRow('sys.symbol.arrowshape_turn_up_left', '回复', false, () => { this.onReplyTo(this.msg.id); });
+      this.menuRow('sys.symbol.doc_on_doc', '复制文本', false, () => { this.onCopyText(this.msg.id); });
+      this.menuRow('sys.symbol.link', '拷贝消息链接', false, () => { this.onCopyLink(this.msg.id); });
+      this.menuRow('sys.symbol.arrowshape_turn_up_right', '转发', false, () => { this.onForwardMsg(this.msg.id); });
+      this.menuRow('sys.symbol.exclamationmark_circle', '举报', true, () => { this.onReportMsg(this.msg.id); });
+      this.menuRow('sys.symbol.checkmark_circle', '选择', false, () => { this.onSelectMsg(this.msg.id); });
+    }
+    .width(262)
+    .padding({ top: 6, bottom: 6 });
+  }
+
   @Builder
   content() {
     if (this.msg.replyText !== '') {
@@ -601,7 +667,10 @@ export struct MessageBubble {
   }
 
   build() {
-    if (this.msg.contentType === 'system') {
+    if (this.msg.contentType === 'hidden') {
+      // Filtered service notice (e.g. channel paid-DM price) — render nothing.
+      Column().height(0);
+    } else if (this.msg.contentType === 'system') {
       Column() {
         if (this.dateLabel !== '') {
           Text(this.dateLabel)
@@ -691,7 +760,8 @@ export struct MessageBubble {
       .padding(this.isBareEmoji() ? 0 : 8)
       .shadow(this.isBareEmoji() ? { radius: 0, color: Color.Transparent, offsetX: 0, offsetY: 0 }
         : { radius: 2, color: '#14000000', offsetX: 0, offsetY: 1 })
-      .onAreaChange((_old: Area, area: Area) => { this.bubbleW = area.width as number; });
+      .onAreaChange((_old: Area, area: Area) => { this.bubbleW = area.width as number; })
+      .bindContextMenu(this.msgContextMenu(), ResponseType.LongPress);
       if (this.msg.isOutgoing && !this.isBareEmoji()) {
         Polygon({ width: 8, height: 12 })
           .points([[0, 0], [8, 12], [0, 12]])

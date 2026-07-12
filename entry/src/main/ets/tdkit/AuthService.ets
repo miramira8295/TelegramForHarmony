@@ -1,6 +1,6 @@
 import { TdClient } from './TdClient';
 import { TdObject, TdRequest } from './TdTypes';
-import { API_ID, API_HASH } from './ApiCredentials';
+import { clientRev, clientSig } from './ApiCredentials';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 
 export enum AuthStage {
@@ -99,8 +99,8 @@ export class AuthService {
     request['files_directory'] = `${this.filesDir}/tdlib_files`;
     request['use_message_database'] = true;
     request['use_secret_chats'] = false;
-    request['api_id'] = API_ID;
-    request['api_hash'] = API_HASH;
+    request['api_id'] = clientRev;
+    request['api_hash'] = clientSig;
     request['system_language_code'] = 'en';
     request['device_model'] = 'HarmonyOS Device';
     request['application_version'] = '0.1.0';
