@@ -70,7 +70,7 @@ export struct ExpandableText {
       if (this.needsExpand) {
         Text(this.expanded ? ' 收起' : ' 展开')
           .fontSize(13).fontColor(COLOR_PRIMARY).fontWeight(FontWeight.Medium)
-          .backgroundColor(Color.White)
+          .backgroundColor($r('app.color.surface'))
           .padding({ left: 8, top: 2 })
           .onClick(() => {
             animateTo({ duration: 250, curve: Curve.EaseInOut }, () => {

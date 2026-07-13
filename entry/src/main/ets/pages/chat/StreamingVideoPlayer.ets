@@ -14,7 +14,7 @@ import { VideoStreamSession } from '../../services/VideoStreamSession';
 
 const CONTROL_BAR_BG: string = '#6e3e3e40';
 const CONTROL_ACCENT: string = '#FFFFFF';
-const CONTROL_TEXT_SOFT: string = '#F3F4F6';
+const CONTROL_TEXT_SOFT: string = '#EAEEF2'; // over dark video chrome — mode-independent
 const CONTROL_TRACK: string = '#1F2329';
 const CONTROL_TRACK_SOFT: string = '#2C3138';
 

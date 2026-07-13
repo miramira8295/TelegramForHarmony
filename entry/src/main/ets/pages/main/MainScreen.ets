@@ -8,7 +8,7 @@ import { MyProfilePage } from './MyProfilePage';
 import { TdObject, TdRequest, TdError } from '../../tdkit/TdTypes';
 import { COLOR_PRIMARY, COLOR_TAB_UNSELECTED } from '../../util/theme';
 
-const DOCK_BG: ResourceColor = Color.White;
+const DOCK_BG: ResourceColor = $r('app.color.surface');
 const BADGE_BG: string = '#4CD964';
 const DOCK_H: number = 62;      // capsule height
 const DOCK_GAP: number = 12;    // gap below the capsule (above it: content padding)

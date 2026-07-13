@@ -1,9 +1,59 @@
-import { router } from '@kit.ArkUI';
+import { router, promptAction } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { getTdClient } from '../tdkit/Globals';
 import { TdObject, TdRequest, TdError } from '../tdkit/TdTypes';
-import { normalizeTelegramLink, bareUsernameOf } from './linkNav';
+import { normalizeTelegramLink, bareUsernameOf, inviteLinkOf } from './linkNav';
 import { openUrl } from './openUrl';
+import { COLOR_PRIMARY } from './theme';
+
+function openChatPage(chatId: number): void {
+  const params: Record<string, Object> = { 'chatId': chatId };
+  router.pushUrl({ url: 'pages/chat/ChatPage', params: params });
+}
+
+// Private invite link (t.me/+hash): preview the chat via checkChatInviteLink;
+// already a member → straight into the chat, otherwise confirm and join.
+export function openInviteLink(context: common.UIAbilityContext, invite: string, original: string): void {
+  const req: TdRequest = { '@type': 'checkChatInviteLink' };
+  req['invite_link'] = invite;
+  getTdClient().send(req).then((info: TdObject) => {
+    const chatId = (info['chat_id'] as number | undefined) ?? 0;
+    if (chatId !== 0) {
+      openChatPage(chatId);
+      return;
+    }
+    const title = (info['title'] as string | undefined) ?? '';
+    const count = (info['member_count'] as number | undefined) ?? 0;
+    promptAction.showDialog({
+      title: '加入群组',
+      message: count > 0 ? `「${title}」· ${count} 位成员` : `「${title}」`,
+      buttons: [
+        { text: '取消', color: '#8E8E93' },
+        { text: '加入', color: $r('app.color.primary') }
+      ]
+    }).then((r) => {
+      if (r.index !== 1) {
+        return;
+      }
+      const join: TdRequest = { '@type': 'joinChatByInviteLink' };
+      join['invite_link'] = invite;
+      getTdClient().send(join).then((chat: TdObject) => {
+        const id = (chat['id'] as number | undefined) ?? 0;
+        if (id !== 0) {
+          openChatPage(id);
+        }
+      }).catch((e: TdError) => {
+        console.error(`openInviteLink.join failed: ${e.message}`);
+        promptAction.showToast({ message: '加入失败,链接可能已失效' });
+      });
+    });
+  }).catch((e: TdError) => {
+    // Expired/invalid invite — or a link TDLib can't preview; let the
+    // browser show Telegram's own page rather than failing silently.
+    console.error(`openInviteLink.check failed: ${e.message}`);
+    openUrl(context, original);
+  });
+}
 
 // Full in-app routing for a tapped link outside the chat page (profile bios,
 // channel descriptions, ...): text mentions open the profile card, usernames
@@ -19,6 +69,11 @@ export function openTelegramLink(context: common.UIAbilityContext, url: string):
       const params: Record<string, Object> = { 'userId': uid };
       router.pushUrl({ url: 'pages/profile/ProfilePage', params: params });
     }
+    return;
+  }
+  const invite = inviteLinkOf(url);
+  if (invite !== '') {
+    openInviteLink(context, invite, url);
     return;
   }
   const bareName = bareUsernameOf(url);

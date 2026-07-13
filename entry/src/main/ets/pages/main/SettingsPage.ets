@@ -1,12 +1,14 @@
 import { getTdClient } from '../../tdkit/Globals';
 import { ProfileStore } from '../../store/ProfileStore';
 import { AvatarView } from '../chatlist/AvatarView';
+import { TgsStickerView } from '../chat/TgsStickerView';
+import { WebmStickerView } from '../chat/WebmStickerView';
 import { TdObject, TdRequest, TdError } from '../../tdkit/TdTypes';
 import { COLOR_PRIMARY, COLOR_TEXT_PRIMARY, COLOR_TEXT_SECONDARY } from '../../util/theme';
 
-const CARD_BG: ResourceColor = Color.White;
+const CARD_BG: ResourceColor = $r('app.color.surface');
 const CARD_RADIUS: number = 14;
-const PAGE_BG: string = '#EFEFF4';
+const PAGE_BG: ResourceColor = $r('app.color.page_bg');
 
 interface SettingItem {
   icon: string;
@@ -20,10 +22,10 @@ const SETTINGS: SettingItem[] = [
   { icon: 'sys.symbol.message_fill', bg: '#FF9500', title: '聊天设置', subtitle: '壁纸、夜间模式与动画效果' },
   { icon: 'sys.symbol.lock_fill', bg: '#34C759', title: '隐私与安全', subtitle: '最后上线时间、登录设备、通行密钥' },
   { icon: 'sys.symbol.bell_fill', bg: '#FF3B30', title: '通知', subtitle: '声音、通话、标记' },
-  { icon: 'sys.symbol.chart_pie', bg: '#007AFF', title: '数据与存储', subtitle: '媒体下载设置' },
+  { icon: 'sys.symbol.data_proportion', bg: '#007AFF', title: '数据与存储', subtitle: '媒体下载设置' },
   { icon: 'sys.symbol.folder_fill', bg: '#34AADC', title: '聊天文件夹', subtitle: '将聊天分类到文件夹中' },
-  { icon: 'sys.symbol.laptopcomputer', bg: '#5AC8FA', title: '设备', subtitle: '管理已连接的设备' },
-  { icon: 'sys.symbol.battery_100', bg: '#FF9500', title: '省电', subtitle: '低电量时降低功耗' }
+  { icon: 'sys.symbol.computer', bg: '#5AC8FA', title: '设备', subtitle: '管理已连接的设备' },
+  { icon: 'sys.symbol.battery_100percent', bg: '#FF9500', title: '省电', subtitle: '低电量时降低功耗' }
 ];
 
 // The settings tab: user header (avatar with camera badge, name, phone·username)
@@ -37,6 +39,9 @@ export struct SettingsPage {
   @State name: string = '';
   @State initials: string = '?';
   @State avatarPath: string = '';
+  @State avatarAnimPath: string = '';
+  @State statusEmojiPath: string = '';
+  @State statusEmojiFormat: string = '';
   @State phone: string = '';
   @State usernames: string[] = [];
   private store: ProfileStore | null = null;
@@ -71,6 +76,9 @@ export struct SettingsPage {
     this.name = s.name;
     this.initials = s.initials;
     this.avatarPath = s.avatarPath;
+    this.avatarAnimPath = s.avatarAnimPath;
+    this.statusEmojiPath = s.statusEmojiPath;
+    this.statusEmojiFormat = s.statusEmojiFormat;
     this.phone = s.phone;
     this.usernames = s.usernames;
   }
@@ -103,7 +111,8 @@ export struct SettingsPage {
       Stack({ alignContent: Alignment.BottomEnd }) {
         AvatarView({
           avatarPath: this.avatarPath, initials: this.initials,
-          colorSeed: this.myId, avatarSize: 96
+          colorSeed: this.myId, avatarSize: 96,
+          animPath: this.avatarAnimPath
         });
         Row() {
           SymbolGlyph($r('sys.symbol.camera')).fontSize(15).fontColor([Color.White]);
@@ -113,10 +122,23 @@ export struct SettingsPage {
         .border({ width: 2.5, color: PAGE_BG })
         .justifyContent(FlexAlign.Center);
       }
-      Text(this.name)
-        .fontSize(22).fontWeight(FontWeight.Bold).fontColor(COLOR_TEXT_PRIMARY)
-        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        .constraintSize({ maxWidth: '86%' });
+      Row({ space: 5 }) {
+        Text(this.name)
+          .fontSize(22).fontWeight(FontWeight.Bold).fontColor(COLOR_TEXT_PRIMARY)
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          .flexShrink(1);
+        if (this.statusEmojiPath !== '') {
+          if (this.statusEmojiFormat === 'tgs') {
+            TgsStickerView({ tgsPath: this.statusEmojiPath, boxWidth: 24, boxHeight: 24 });
+          } else if (this.statusEmojiFormat === 'webm') {
+            WebmStickerView({ webmPath: this.statusEmojiPath, boxWidth: 24, boxHeight: 24 });
+          } else {
+            Image(`file://${this.statusEmojiPath}`).width(24).height(24).objectFit(ImageFit.Contain);
+          }
+        }
+      }
+      .alignItems(VerticalAlign.Center)
+      .constraintSize({ maxWidth: '86%' });
       Text(this.subtitleLine()).fontSize(14).fontColor(COLOR_TEXT_SECONDARY);
     }
     .width('100%')
@@ -147,7 +169,7 @@ export struct SettingsPage {
       Column() {
         ForEach(SETTINGS, (item: SettingItem, index: number) => {
           if (index > 0) {
-            Divider().color('#EDEDED').strokeWidth(0.7).margin({ left: 57 });
+            Divider().color($r('app.color.divider')).strokeWidth(0.7).margin({ left: 57 });
           }
           this.settingRow(item);
         }, (item: SettingItem) => item.title);

@@ -1,9 +1,71 @@
-import { IjkMediaPlayer, OnPreparedListener, OnErrorListener } from '@ohos/ijkplayer';
+import { IjkMediaPlayer, OnPreparedListener, OnErrorListener, OnCompletionListener } from '@ohos/ijkplayer';
 
 let nextWebmStickerId: number = 1;
 // Pre-EOF rewind: poll the position and seek to 0 this far before the end.
 const LOOP_POLL_MS: number = 50;
-const LOOP_REWIND_AHEAD_MS: number = 250;
+// Keep this small: every loop cycle drops this much tail, so a large value
+// visibly "speeds up" short stickers. 100ms is enough to dodge the EOF hitch
+// (packet-buffering=0 does the heavy lifting).
+const LOOP_REWIND_AHEAD_MS: number = 100;
+
+// Native player setup/teardown scheduler. A sticker-grid tab switch destroys
+// and creates ~15 ijkplayer instances at once; each native_setup/release is
+// main-thread heavy, so running them inline freezes the UI for seconds.
+// Two queues: releases run FIRST (a few per tick, so rapid tab switching
+// can't pile up zombie players), inits run one per tick only once every
+// pending release has been processed.
+type PlayerJob = () => void;
+const releaseJobs: PlayerJob[] = [];
+const initJobs: PlayerJob[] = [];
+let playerJobTimer: number = -1;
+const PLAYER_JOB_INTERVAL_MS: number = 30;
+const RELEASES_PER_TICK: number = 3;
+let livePlayers: number = 0;
+
+function runJob(job: PlayerJob): void {
+  try {
+    job();
+  } catch (e) {
+    console.error(`WebmStickerView player job failed: ${e}`);
+  }
+}
+
+function pumpPlayerJobs(): void {
+  if (playerJobTimer !== -1) {
+    return;
+  }
+  playerJobTimer = setInterval(() => {
+    if (releaseJobs.length > 0) {
+      // Drain teardowns first — they free native resources.
+      for (let i = 0; i < RELEASES_PER_TICK; i++) {
+        const r = releaseJobs.shift();
+        if (r === undefined) {
+          break;
+        }
+        runJob(r);
+      }
+    } else {
+      const init = initJobs.shift();
+      if (init !== undefined) {
+        runJob(init);
+      }
+    }
+    if (releaseJobs.length === 0 && initJobs.length === 0) {
+      clearInterval(playerJobTimer);
+      playerJobTimer = -1;
+    }
+  }, PLAYER_JOB_INTERVAL_MS);
+}
+
+function enqueueRelease(job: PlayerJob): void {
+  releaseJobs.push(job);
+  pumpPlayerJobs();
+}
+
+function enqueueInit(job: PlayerJob): void {
+  initJobs.push(job);
+  pumpPlayerJobs();
+}
 
 // Loops a Telegram WEBM (VP9) video sticker inline, muted, via ijkplayer on a
 // TEXTURE XComponent (composites within ArkUI, unlike SURFACE). Falls back to
@@ -56,21 +118,25 @@ export struct WebmStickerView {
     }
   }
 
+  private destroyed: boolean = false;
+
   private release(): void {
+    this.destroyed = true;
     this.stopLoopWatch();
     if (this.player !== null) {
       const p = this.player;
       this.player = null;
-      try {
+      // Deferred: releasing inline (e.g. a whole grid page unmounting on a
+      // tab switch) serializes many native teardowns into one frame.
+      enqueueRelease(() => {
         p.release();
-      } catch (e) {
-        console.error(`WebmStickerView.release failed: ${e}`);
-      }
+        livePlayers--;
+      });
     }
   }
 
   private initPlayer(context: object): void {
-    if (this.player !== null || this.webmPath === '') {
+    if (this.destroyed || this.player !== null || this.webmPath === '') {
       return;
     }
     try {
@@ -91,6 +157,23 @@ export struct WebmStickerView {
           this.startLoopWatch();
         }
       };
+      // EOF safety net: if the pre-EOF rewind misses (longer MP4 avatar
+      // loops report duration less precisely than webm stickers), restart
+      // playback instead of stopping after one pass.
+      const completionListener: OnCompletionListener = {
+        onCompletion: (): void => {
+          if (this.player !== player || this.destroyed) {
+            return;
+          }
+          try {
+            player.seekTo('0');
+            player.start();
+          } catch (e) {
+            console.error(`WebmStickerView loop restart failed: ${e}`);
+          }
+        }
+      };
+      player.setOnCompletionListener(completionListener);
       const errorListener: OnErrorListener = {
         onError: (what: number, extra: number): void => {
           console.error(`WebmStickerView error: what=${what}, extra=${extra}`);
@@ -124,7 +207,18 @@ export struct WebmStickerView {
       XComponent({ id: this.componentId(), type: XComponentType.TEXTURE, libraryname: 'ijkplayer_napi' })
         .width(this.boxWidth).height(this.boxHeight)
         .onLoad((context: object) => {
-          this.initPlayer(context);
+          // Deferred: a screenful of cells mounting together would otherwise
+          // run all their native setups in the same frame.
+          enqueueInit(() => {
+            if (this.destroyed) {
+              return; // cell died while queued (rapid tab switching)
+            }
+            this.initPlayer(context);
+            livePlayers++;
+            if (livePlayers > 24) {
+              console.warn(`WebmStickerView: ${livePlayers} live players`);
+            }
+          });
         })
         .onDestroy(() => {
           this.release();

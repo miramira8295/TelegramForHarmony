@@ -15,6 +15,7 @@ import formatUserStatusTest from './FormatUserStatus.test';
 import formatMsgContentTest from './FormatMsgContent.test';
 import messageEntryTest from './MessageEntry.test';
 import messageStoreTest from './MessageStore.test';
+import linkNavTest from './LinkNav.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -34,4 +35,5 @@ export default function testsuite() {
   formatMsgContentTest();
   messageEntryTest();
   messageStoreTest();
+  linkNavTest();
 }

@@ -1,5 +1,6 @@
 import { AVATAR_PALETTE, AVATAR_SIZE, COLOR_PRIMARY } from '../../util/theme';
 import { formatTTL } from '../../util/formatTTL';
+import { AvLoopVideo } from '../common/AvLoopVideo';
 
 @Component
 export struct AvatarView {
@@ -7,11 +8,27 @@ export struct AvatarView {
   @Prop initials: string;
   @Prop colorSeed: number;
   @Prop autoDeleteTime: number = 0;
+  // Animated profile photo (MPEG4 loop). Only profile pages pass this —
+  // list rows stay static (one looping player per row would be too heavy).
+  @Prop animPath: string = '';
   avatarSize: number = AVATAR_SIZE;
 
   @Builder
   base() {
-    if (this.avatarPath !== '') {
+    if (this.animPath !== '') {
+      // Animated avatars are H.264 MP4 — the system AVPlayer loops them with
+      // hardware decode (far lighter than ijkplayer's software path).
+      Column() {
+        AvLoopVideo({
+          videoPath: this.animPath,
+          boxWidth: this.avatarSize,
+          boxHeight: this.avatarSize
+        });
+      }
+      .width(this.avatarSize).height(this.avatarSize)
+      .borderRadius(this.avatarSize / 2)
+      .clip(true);
+    } else if (this.avatarPath !== '') {
       // ArkUI Image needs a file:// URI for absolute sandbox paths; TDLib
       // hands us bare filesystem paths like /data/.../photo.jpg.
       Image(this.avatarPath.startsWith('/') ? `file://${this.avatarPath}` : this.avatarPath)

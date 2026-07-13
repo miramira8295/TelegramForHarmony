@@ -48,6 +48,10 @@ export class ProfileStore {
   name: string = '';
   initials: string = '?';
   avatarPath: string = '';
+  avatarAnimPath: string = ''; // animated profile photo (MPEG4), '' if none
+  // Premium emoji status (the animated custom emoji beside the name).
+  statusEmojiPath: string = '';
+  statusEmojiFormat: string = ''; // 'tgs' | 'webm' | 'webp'
   statusText: string = '';
   phone: string = '';
   usernames: string[] = [];
@@ -110,6 +114,12 @@ export class ProfileStore {
     this.listeners = [];
   }
 
+  // Re-fetch user + full info (e.g. after the profile photo or bio changed).
+  reload(): void {
+    this.loadUser();
+    this.loadFullInfo();
+  }
+
   private notify(): void {
     for (const l of this.listeners) {
       l();
@@ -168,7 +178,39 @@ export class ProfileStore {
       const big = photo !== undefined ? (photo['big'] as TdObject | undefined) : undefined;
       const fileId = big !== undefined ? ((big['id'] as number | undefined) ?? 0) : 0;
       this.download(fileId, (p: string) => { this.avatarPath = p; });
+      this.parseEmojiStatus(user['emoji_status'] as TdObject | undefined);
       this.notify();
+    });
+  }
+
+  // emoji_status.custom_emoji_id (older TDLib) or emoji_status.type.custom_emoji_id
+  // (newer) → getCustomEmojiStickers → the sticker file behind the status.
+  private parseEmojiStatus(es: TdObject | undefined): void {
+    if (es === undefined) {
+      return;
+    }
+    const nestedType = es['type'] as TdObject | undefined;
+    const rawId = (nestedType !== undefined ? nestedType['custom_emoji_id'] : undefined)
+      ?? es['custom_emoji_id'];
+    const ceId = rawId !== undefined ? `${rawId}` : '';
+    if (ceId === '' || ceId === '0') {
+      return;
+    }
+    const req: TdRequest = { '@type': 'getCustomEmojiStickers' };
+    req['custom_emoji_ids'] = [ceId];
+    this.send(req, 'getCustomEmojiStickers', (res: TdObject) => {
+      const stickers = (res['stickers'] as TdObject[] | undefined) ?? [];
+      if (stickers.length === 0) {
+        return;
+      }
+      const st = stickers[0];
+      const fmt = st['format'] as TdObject | undefined;
+      const fmtName = fmt !== undefined ? ((fmt['@type'] as string | undefined) ?? '') : '';
+      this.statusEmojiFormat = fmtName === 'stickerFormatWebp' ? 'webp'
+        : (fmtName === 'stickerFormatTgs' ? 'tgs' : 'webm');
+      const file = st['sticker'] as TdObject | undefined;
+      const stickerId = file !== undefined ? ((file['id'] as number | undefined) ?? 0) : 0;
+      this.download(stickerId, (p: string) => { this.statusEmojiPath = p; });
     });
   }
 
@@ -186,6 +228,16 @@ export class ProfileStore {
         const botFull = botInfo !== undefined ? ((botInfo['description'] as string | undefined) ?? '') : '';
         this.bio = botDesc !== '' ? botDesc : botFull;
       }
+      // Animated profile photo: userFullInfo.photo is a chatPhoto whose
+      // optional `animation` is a small MPEG4 loop (getUser only carries the
+      // static profilePhoto + a has_animation flag, not the file itself).
+      const photoFull = (full['photo'] as TdObject | undefined)
+        ?? (full['personal_photo'] as TdObject | undefined)
+        ?? (full['public_photo'] as TdObject | undefined);
+      const anim = photoFull !== undefined ? (photoFull['animation'] as TdObject | undefined) : undefined;
+      const animFile = anim !== undefined ? (anim['file'] as TdObject | undefined) : undefined;
+      const animId = animFile !== undefined ? ((animFile['id'] as number | undefined) ?? 0) : 0;
+      this.download(animId, (p: string) => { this.avatarAnimPath = p; });
       this.personalChatId = (full['personal_chat_id'] as number | undefined) ?? 0;
       const bd = full['birthdate'] as TdObject | undefined;
       if (bd !== undefined) {

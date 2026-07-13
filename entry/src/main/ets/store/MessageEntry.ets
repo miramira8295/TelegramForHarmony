@@ -51,6 +51,7 @@ export interface MessageEntry {
   videoPath: string;            // local path once the full video is downloaded
   videoProgress: number;        // 0-100 download progress of the full video file
   stickerFileId: number;        // animated (TGS) sticker source file id, 0 otherwise
+  customEmojiId: string;        // single custom-emoji message, pending sticker resolution
   stickerFormat: string;        // 'webp' | 'tgs' | 'webm', '' for non-stickers
   stickerPath: string;          // local path of the downloaded TGS file
 }
@@ -117,7 +118,8 @@ export function cloneMessage(m: MessageEntry): MessageEntry {
     videoFileId: m.videoFileId, videoFileSize: m.videoFileSize, videoMimeType: m.videoMimeType,
     videoFileName: m.videoFileName, videoDuration: m.videoDuration,
     videoPath: m.videoPath, videoProgress: m.videoProgress,
-    stickerFileId: m.stickerFileId, stickerFormat: m.stickerFormat, stickerPath: m.stickerPath
+    stickerFileId: m.stickerFileId, stickerFormat: m.stickerFormat, stickerPath: m.stickerPath,
+    customEmojiId: m.customEmojiId
   };
 }
 
@@ -423,6 +425,7 @@ export function buildMessageEntry(message: TdObject, users: UserStore): MessageE
     videoProgress: 0,
     stickerFileId: c.stickerFileId ?? 0,
     stickerFormat: c.stickerFormat ?? '',
-    stickerPath: ''
+    stickerPath: '',
+    customEmojiId: c.customEmojiId ?? ''
   };
 }

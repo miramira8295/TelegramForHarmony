@@ -167,6 +167,12 @@ export function formatPreview(message: TdObject | null): string {
   if (type === 'messagePaidMedia') {
     return '🖼 付费内容';
   }
+  if (type === 'messageAnimatedEmoji') {
+    const emoji = (content!['emoji'] as string | undefined) ?? '';
+    if (emoji !== '') {
+      return emoji;
+    }
+  }
   const svc: string | undefined = SERVICE_LABELS[type];
   if (svc !== undefined) {
     return svc;

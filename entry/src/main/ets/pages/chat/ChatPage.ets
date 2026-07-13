@@ -4,6 +4,10 @@ import { common } from '@kit.AbilityKit';
 import { picker, fileIo as fs } from '@kit.CoreFileKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
 import { VoiceRecorder } from '../../services/VoiceRecorder';
+import { formatDateSeparator } from '../../util/formatDateSeparator';
+import { resolveEmojiStatus } from '../../util/emojiStatus';
+import { TgsStickerView } from './TgsStickerView';
+import { WebmStickerView } from './WebmStickerView';
 import { EmojiPanel } from './EmojiPanel';
 import { StickerItem } from './StickerPicker';
 import { GifItem } from './GifPicker';
@@ -20,7 +24,8 @@ import { AlbumGroupDataSource } from './AlbumGroupDataSource';
 import { collapseAlbums, groupIndexOf, AlbumGroup } from '../../util/collapseAlbums';
 import { AvatarView } from '../chatlist/AvatarView';
 import { COLOR_PRIMARY, COLOR_TEXT_PRIMARY, COLOR_TEXT_SECONDARY } from '../../util/theme';
-import { normalizeTelegramLink, bareUsernameOf } from '../../util/linkNav';
+import { normalizeTelegramLink, bareUsernameOf, inviteLinkOf } from '../../util/linkNav';
+import { openInviteLink } from '../../util/openTelegramLink';
 import { openUrl } from '../../util/openUrl';
 import { TdObject, TdRequest, TdError } from '../../tdkit/TdTypes';
 import { searchMentions, loadBotCommands, MentionItem, CommandItem } from '../../store/InputSuggestions';
@@ -77,6 +82,8 @@ struct ChatPage {
   @State pinnedPreview: string = '';
   @State pinnedCount: number = 0;
   private chatId: number = 0;
+  // >0: comment-thread view over the linked discussion group (see onCommentTap)
+  private threadRootId: number = 0;
   @State isGroup: boolean = false;
   @State isChannel: boolean = false;
   private store: MessageStore | null = null;
@@ -105,6 +112,12 @@ struct ChatPage {
   @State flashAlpha: number = 0;
   @State flashShown: boolean = false;
   private flashSeq: number = 0;
+  // Floating date chip: shows the topmost visible message's date while the
+  // list scrolls, fades out shortly after scrolling stops (the in-list date
+  // pills stay — this is the always-visible companion).
+  @State floatDate: string = '';
+  @State floatDateShown: boolean = false;
+  private floatDateHideTimer: number = -1;
   // Message id of a video waiting to be saved to the gallery once downloaded.
   private pendingGallerySaveId: number = 0;
   // Message id of a document waiting for the "save as" picker once downloaded.
@@ -133,6 +146,9 @@ struct ChatPage {
   @State headerMenuShow: boolean = false; // header ⋮ dropdown
   // In-chat message search (search-mode header + result navigation).
   @State searchMode: boolean = false;
+  // Multi-select mode (entered via the long-press menu's 选择 item).
+  @State selecting: boolean = false;
+  @State selectedIds: number[] = [];
   @State searchQuery: string = '';
   @State searchResults: number[] = []; // message ids, newest → oldest
   @State searchTotal: number = 0;
@@ -140,6 +156,10 @@ struct ChatPage {
   private searchSeq: number = 0;       // drops stale responses
   private unsubMsg: (() => void) | null = null;
   private unsubSub: (() => void) | null = null;
+  // Peer's premium emoji status (private chats) shown beside the header title.
+  @State headerEmojiPath: string = '';
+  @State headerEmojiFormat: string = '';
+  private headerEmojiFetched: boolean = false;
   private unsubChat: (() => void) | null = null;
   private unsubPinned: (() => void) | null = null;
   private unsubHeaderAvatar: (() => void) | null = null;
@@ -150,9 +170,10 @@ struct ChatPage {
     const params = router.getParams() as Record<string, Object> | undefined;
     this.chatId = params !== undefined ? (params['chatId'] as number) : 0;
     const jumpTo = params !== undefined ? (params['jumpTo'] as number | undefined) : undefined;
+    this.threadRootId = params !== undefined ? ((params['threadRootId'] as number | undefined) ?? 0) : 0;
     this.refreshHeader();
     this.unsubChat = getChatStore().subscribe(() => { this.refreshHeader(); }, 'main');
-    const store = new MessageStore(getTdClient(), getUserStore(), this.chatId);
+    const store = new MessageStore(getTdClient(), getUserStore(), this.chatId, this.threadRootId);
     this.store = store;
     this.unsubMsg = store.subscribe((list: MessageEntry[]) => {
       const maxId: number = list.length > 0 ? list[list.length - 1].id : 0;
@@ -229,13 +250,15 @@ struct ChatPage {
         if (this.atBottom) {
           this.scroller.scrollEdge(Edge.Bottom);
         }
-      } else if (this.didInitialScroll && this.atBottom
+      } else if (this.didInitialScroll && this.atBottom && this.viewerMsgId === 0
         && (this.store === null || !this.store.getHasMoreNewer())) {
         // In-place content growth (thumbnails, reply quotes, forward headers
         // filling in async) changes row heights; when the user is at the
         // bottom, stay glued there instead of letting the tail drift. Never
         // glue while unloaded newer pages exist — being at the window's edge
         // there is NOT the live tail, and gluing chain-loads every page.
+        // Also never glue while the media viewer is open: hiding its thumbnail
+        // collapses that row, which can fake an at-bottom state.
         this.scroller.scrollEdge(Edge.Bottom);
       }
       // jumpToLatest's newest page arrived — snap to the end. The dataset was
@@ -286,7 +309,10 @@ struct ChatPage {
         }
       }
     });
-    this.unsubSub = store.subscribeSubtitle((s: string) => { this.subtitle = s; });
+    this.unsubSub = store.subscribeSubtitle((s: string) => {
+      this.subtitle = s;
+      this.fetchHeaderEmojiStatus();
+    });
     this.unsubHeaderTitle = store.subscribeHeaderTitle((t: string) => {
       // Fallback header for chats not yet in ChatStore (e.g. opened by t.me link).
       if (t !== '' && this.title === '') {
@@ -310,12 +336,16 @@ struct ChatPage {
       this.pinnedCycle = 0;
     });
     if (jumpTo !== undefined && jumpTo > 0) {
-      // Opened from a "N Comments" tap: skip the unread-boundary jump and load
-      // straight around the discussion thread's root message instead, without
-      // racing an additional latest-history request that can disturb the target.
+      // Opened via a message link: load straight around the target message,
+      // without racing an additional latest-history request.
       this.didInitialScroll = true;
       this.pendingJumpId = jumpTo;
       store.open(jumpTo);
+    } else if (this.threadRootId > 0) {
+      // Comment thread: start at the TOP — the root post — not the newest reply.
+      this.didInitialScroll = true;
+      this.pendingJumpId = this.threadRootId;
+      store.open(this.threadRootId);
     } else {
       store.open();
     }
@@ -355,11 +385,57 @@ struct ChatPage {
       this.closeViewer();
       return true;
     }
+    if (this.selecting) {
+      this.exitSelect();
+      return true;
+    }
     if (this.searchMode) {
       this.exitSearch();
       return true;
     }
     return false;
+  }
+
+  // Private chat: the peer's emoji status appears beside the header title.
+  private fetchHeaderEmojiStatus(): void {
+    if (this.headerEmojiFetched || this.store === null) {
+      return;
+    }
+    const uid = this.store.getPeerUserId();
+    if (uid <= 0) {
+      return;
+    }
+    this.headerEmojiFetched = true;
+    const req: TdRequest = { '@type': 'getUser' };
+    req['user_id'] = uid;
+    getTdClient().send(req).then((user: TdObject) => {
+      resolveEmojiStatus(user['emoji_status'] as TdObject | undefined, (path: string, format: string) => {
+        this.headerEmojiPath = path;
+        this.headerEmojiFormat = format;
+      });
+    }).catch((e: TdError) => {
+      console.error(`ChatPage.fetchHeaderEmojiStatus failed: ${e.message}`);
+    });
+  }
+
+  // Refresh the floating date chip from the topmost visible row and (re)arm
+  // its fade-out. Only meaningful once the initial positioning has settled.
+  private updateFloatDate(start: number): void {
+    if (!this.didInitialScroll || start < 0 || start >= this.groups.length) {
+      return;
+    }
+    const g = this.groups[start];
+    if (g.head.date > 0) {
+      this.floatDate = formatDateSeparator(g.head.date);
+      this.floatDateShown = true;
+    }
+    if (this.floatDateHideTimer !== -1) {
+      clearTimeout(this.floatDateHideTimer);
+    }
+    this.floatDateHideTimer = setTimeout(() => {
+      this.floatDateHideTimer = -1;
+      this.floatDateShown = false;
+    }, 1000);
   }
 
   // The banner tracks the scroll position: it shows the newest pinned message
@@ -456,9 +532,16 @@ struct ChatPage {
   }
 
   private refreshHeader(): void {
+    if (this.threadRootId > 0) {
+      // Comment-thread view: fixed title, the rest of the header still shows
+      // the discussion group's avatar/mute state.
+      this.title = '评论';
+    }
     const e: ChatEntry | undefined = getChatStore().entryOf(this.chatId);
     if (e !== undefined) {
-      this.title = e.title;
+      if (this.threadRootId === 0) {
+        this.title = e.title;
+      }
       // Don't clobber a MessageStore-resolved avatar (channels/folders) with an empty one.
       if (e.avatarPath !== '') { this.avatarPath = e.avatarPath; }
       this.initials = e.initials;
@@ -507,6 +590,12 @@ struct ChatPage {
         const params: Record<string, Object> = { 'userId': uid };
         router.pushUrl({ url: 'pages/profile/ProfilePage', params: params });
       }
+      return;
+    }
+    // Private invite link (t.me/+hash): preview → confirm → join in-app.
+    const invite = inviteLinkOf(url);
+    if (invite !== '') {
+      openInviteLink(getContext(this) as common.UIAbilityContext, invite, url);
       return;
     }
     // '@name' / t.me/<name> with no message id: resolve the username — a user
@@ -756,7 +845,9 @@ struct ChatPage {
       }
       const params: Record<string, Object> = { 'chatId': discussionChatId };
       if (threadId !== undefined && threadId > 0) {
-        params['jumpTo'] = threadId;
+        // Thread-scoped view: only this post's replies (getMessageThreadHistory),
+        // not the whole discussion group's history.
+        params['threadRootId'] = threadId;
       }
       router.pushUrl({ url: 'pages/chat/ChatPage', params: params });
     }).catch((e: TdError) => {
@@ -1165,7 +1256,7 @@ struct ChatPage {
       } else {
         this.pendingGallerySaveId = e.id;
         if (this.store !== null) {
-          this.store.requestVideoDownload(e.id);
+          this.store.requestVideoDownload(e.id, true);
         }
         promptAction.showToast({ message: '视频下载中，完成后自动保存到相册', duration: 2500 });
       }
@@ -1188,7 +1279,7 @@ struct ChatPage {
     if (m.videoPath !== '') {
       openLocalFile(getContext(this) as common.UIAbilityContext, m.videoPath, m.videoMimeType);
     } else {
-      this.store.requestVideoDownload(messageId);
+      this.store.requestVideoDownload(messageId, true);
     }
   }
 
@@ -1203,7 +1294,7 @@ struct ChatPage {
       saveFileToLocal(getContext(this) as common.UIAbilityContext, m.videoPath, m.videoFileName);
     } else {
       this.pendingFileSaveId = messageId;
-      this.store.requestVideoDownload(messageId);
+      this.store.requestVideoDownload(messageId, true);
       promptAction.showToast({ message: '文件下载中，完成后选择保存位置', duration: 2500 });
     }
   }
@@ -1292,21 +1383,21 @@ struct ChatPage {
   headerMenu() {
     Column() {
       this.headerMenuRow('sys.symbol.magnifyingglass', '搜索', false, () => { this.enterSearch(); });
-      Divider().color('#EDEDED').strokeWidth(0.7);
+      Divider().color($r('app.color.divider')).strokeWidth(0.7);
       this.headerMenuRow('sys.symbol.info_circle', '资料', false, () => { this.openProfile(); });
-      Divider().color('#EDEDED').strokeWidth(0.7);
+      Divider().color($r('app.color.divider')).strokeWidth(0.7);
       this.headerMenuRow(this.isMuted ? 'sys.symbol.bell' : 'sys.symbol.bell_slash',
         this.isMuted ? '取消静音' : '静音', false, () => { this.toggleChatMute(); });
-      Divider().color('#EDEDED').strokeWidth(0.7);
+      Divider().color($r('app.color.divider')).strokeWidth(0.7);
       this.headerMenuRow('sys.symbol.xmark_circle', '清空聊天记录', false, () => { this.confirmClearHistory(); });
       if (this.isGroup) {
-        Divider().color('#EDEDED').strokeWidth(0.7);
+        Divider().color($r('app.color.divider')).strokeWidth(0.7);
         this.headerMenuRow('sys.symbol.trash', this.isChannel ? '退出频道' : '退出群组', true,
           () => { this.confirmLeaveChat(); });
       }
     }
     .width(200)
-    .backgroundColor(Color.White)
+    .backgroundColor($r('app.color.surface'))
     .borderRadius(12);
   }
 
@@ -1539,6 +1630,89 @@ struct ChatPage {
     this.replyToText = m.text !== '' ? m.text : '[媒体]';
   }
 
+  // --- multi-select ---
+  private enterSelect(messageId: number): void {
+    ContextMenu.close();
+    this.selecting = true;
+    this.selectedIds = [messageId];
+  }
+
+  private exitSelect(): void {
+    this.selecting = false;
+    this.selectedIds = [];
+  }
+
+  private rowSelected(g: AlbumGroup): boolean {
+    for (const id of g.memberIds) {
+      if (this.selectedIds.indexOf(id) >= 0) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Toggle a whole display row (an album row selects all its members).
+  private toggleSelectRow(g: AlbumGroup): void {
+    if (g.head.contentType === 'system' || g.head.contentType === 'hidden') {
+      return;
+    }
+    if (this.rowSelected(g)) {
+      this.selectedIds = this.selectedIds.filter((id: number) => g.memberIds.indexOf(id) < 0);
+    } else {
+      this.selectedIds = [...this.selectedIds, ...g.memberIds];
+    }
+  }
+
+  private copySelected(): void {
+    const sorted = [...this.selectedIds].sort((a: number, b: number) => a - b);
+    const parts: string[] = [];
+    for (const id of sorted) {
+      const m = this.findMsg(id);
+      if (m !== null && m.text !== '') {
+        parts.push(m.text);
+      }
+    }
+    if (parts.length === 0) {
+      promptAction.showToast({ message: '没有可复制的文本', duration: 1500 });
+      return;
+    }
+    const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, parts.join('\n\n'));
+    pasteboard.getSystemPasteboard().setData(data).then(() => {
+      promptAction.showToast({ message: `已复制 ${parts.length} 条消息`, duration: 1200 });
+      this.exitSelect();
+    }).catch((e: Object) => { console.error(`ChatPage.copySelected failed: ${JSON.stringify(e)}`); });
+  }
+
+  private deleteSelected(): void {
+    const n = this.selectedIds.length;
+    if (n === 0) {
+      return;
+    }
+    promptAction.showDialog({
+      title: `删除 ${n} 条消息?`,
+      message: '"为所有人删除"仅在权限允许时生效',
+      buttons: [
+        { text: '取消', color: '#8E8E93' },
+        { text: '为我删除', color: '#FF3B30' },
+        { text: '为所有人删除', color: '#FF3B30' }
+      ]
+    }).then((r) => {
+      if (r.index !== 1 && r.index !== 2) {
+        return;
+      }
+      const req: TdRequest = { '@type': 'deleteMessages' };
+      req['chat_id'] = this.chatId;
+      req['message_ids'] = [...this.selectedIds];
+      req['revoke'] = r.index === 2;
+      getTdClient().send(req).then(() => {
+        this.exitSelect();
+      }).catch((e: TdError) => {
+        console.error(`ChatPage.deleteMessages failed: ${e.message}`);
+        promptAction.showToast({ message: `删除失败：${e.message}`, duration: 2000 });
+      });
+    });
+  }
+
   private copyMessageText(messageId: number): void {
     const m = this.findMsg(messageId);
     if (m === null || m.text === '') {
@@ -1591,10 +1765,31 @@ struct ChatPage {
     Row() {
       SymbolGlyph($r(symbol)).fontSize(22).fontColor([COLOR_TEXT_PRIMARY]);
     }
-    .width(40).height(40).borderRadius(20).backgroundColor(Color.White)
+    .width(40).height(40).borderRadius(20).backgroundColor($r('app.color.surface'))
     .justifyContent(FlexAlign.Center)
     .shadow({ radius: 4, color: '#12000000', offsetX: 0, offsetY: 1 })
     .onClick(onTap);
+  }
+
+  // Multi-select header: ✕ / count / copy / delete.
+  @Builder
+  selectionHeader() {
+    Row({ space: 8 }) {
+      this.circleButton('sys.symbol.xmark', () => { this.exitSelect(); });
+      Text(`已选择 ${this.selectedIds.length}`)
+        .fontSize(17).fontWeight(FontWeight.Bold).fontColor(COLOR_TEXT_PRIMARY)
+        .layoutWeight(1).margin({ left: 6 });
+      this.circleButton('sys.symbol.plus_square_on_square', () => { this.copySelected(); });
+      Row() {
+        SymbolGlyph($r('sys.symbol.trash')).fontSize(22).fontColor(['#FF3B30']);
+      }
+      .width(40).height(40).borderRadius(20).backgroundColor($r('app.color.surface'))
+      .justifyContent(FlexAlign.Center)
+      .shadow({ radius: 4, color: '#12000000', offsetX: 0, offsetY: 1 })
+      .onClick(() => { this.deleteSelected(); });
+    }
+    .width('100%').padding({ left: 12, right: 12, top: this.topSafe + 10, bottom: 10 })
+    .alignItems(VerticalAlign.Center);
   }
 
   // Search-mode header: back button + a full-width query input.
@@ -1604,7 +1799,7 @@ struct ChatPage {
       this.circleButton('sys.symbol.chevron_left', () => { this.exitSearch(); });
       TextInput({ text: this.searchQuery, placeholder: '搜索' })
         .layoutWeight(1).height(40)
-        .backgroundColor(Color.White).borderRadius(20)
+        .backgroundColor($r('app.color.surface')).borderRadius(20)
         .defaultFocus(true)
         .onChange((v: string) => { this.searchQuery = v; })
         .onSubmit(() => { this.runSearch(0, 0); });
@@ -1626,7 +1821,20 @@ struct ChatPage {
           // instead of being pushed to the pill's far edge.
           Text(this.title).fontSize(16).fontWeight(FontWeight.Bold).fontColor(COLOR_TEXT_PRIMARY)
             .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            .flexShrink(1)
             .constraintSize({ maxWidth: '88%' });
+          if (this.headerEmojiPath !== '') {
+            if (this.headerEmojiFormat === 'tgs') {
+              TgsStickerView({ tgsPath: this.headerEmojiPath, boxWidth: 18, boxHeight: 18 })
+                .margin({ left: 4 });
+            } else if (this.headerEmojiFormat === 'webm') {
+              WebmStickerView({ webmPath: this.headerEmojiPath, boxWidth: 18, boxHeight: 18 })
+                .margin({ left: 4 });
+            } else {
+              Image(`file://${this.headerEmojiPath}`).width(18).height(18).objectFit(ImageFit.Contain)
+                .margin({ left: 4 });
+            }
+          }
           if (this.isMuted) {
             SymbolGlyph($r('sys.symbol.bell_slash')).fontSize(15).fontColor([COLOR_TEXT_SECONDARY])
               .margin({ left: 4 });
@@ -1639,13 +1847,13 @@ struct ChatPage {
       }
       .alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 8, right: 10 })
       .padding({ left: 12, right: 12, top: 5, bottom: 5 })
-      .borderRadius(20).backgroundColor(Color.White)
+      .borderRadius(20).backgroundColor($r('app.color.surface'))
       .shadow({ radius: 4, color: '#12000000', offsetX: 0, offsetY: 1 })
       .onClick(() => { this.openProfile(); });
       Row() {
         SymbolGlyph($r('sys.symbol.more')).fontSize(22).fontColor([COLOR_TEXT_PRIMARY]);
       }
-      .width(40).height(40).borderRadius(20).backgroundColor(Color.White)
+      .width(40).height(40).borderRadius(20).backgroundColor($r('app.color.surface'))
       .justifyContent(FlexAlign.Center)
       .shadow({ radius: 4, color: '#12000000', offsetX: 0, offsetY: 1 })
       .bindMenu(this.headerMenuShow, this.headerMenu(), {
@@ -1693,8 +1901,8 @@ struct ChatPage {
     }
     .width('100%')
     .constraintSize({ maxHeight: 240 })
-    .backgroundColor(Color.White)
-    .divider({ strokeWidth: 0.7, color: '#EDEDED', startMargin: 14, endMargin: 14 });
+    .backgroundColor($r('app.color.surface'))
+    .divider({ strokeWidth: 0.7, color: $r('app.color.divider'), startMargin: 14, endMargin: 14 });
   }
 
   // Reply preview strip above the input bar (Telegram style): accent bar, sender
@@ -1713,8 +1921,8 @@ struct ChatPage {
         .onClick(() => { this.clearReply(); });
     }
     .width('100%').padding({ left: 16, right: 16, top: 7, bottom: 7 })
-    .backgroundColor(Color.White)
-    .border({ width: { top: 0.7 }, color: '#EDEDED' })
+    .backgroundColor($r('app.color.surface'))
+    .border({ width: { top: 0.7 }, color: $r('app.color.divider') })
     .alignItems(VerticalAlign.Center);
   }
 
@@ -1738,7 +1946,7 @@ struct ChatPage {
         }.constraintSize({ maxHeight: 300 }).scrollBar(BarState.Off);
       }
       .width('100%').padding({ left: 10, right: 10, top: 10, bottom: 20 + this.bottomInset() })
-      .backgroundColor(Color.White)
+      .backgroundColor($r('app.color.surface'))
       .borderRadius({ topLeft: 18, topRight: 18 });
     }
     .width('100%').height('100%')
@@ -1883,7 +2091,7 @@ struct ChatPage {
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 8 });
     }
     .width('100%').padding({ left: 12, right: 16, top: 6, bottom: 6 })
-    .backgroundColor(Color.White).alignItems(VerticalAlign.Center)
+    .backgroundColor($r('app.color.surface')).alignItems(VerticalAlign.Center)
     .onClick(() => { this.onPinnedTap(); });
   }
 
@@ -1899,7 +2107,7 @@ struct ChatPage {
       Button() {
         SymbolGlyph($r('sys.symbol.chevron_down')).fontSize(22).fontColor([COLOR_TEXT_PRIMARY]);
       }
-      .width(46).height(46).borderRadius(23).backgroundColor(Color.White)
+      .width(46).height(46).borderRadius(23).backgroundColor($r('app.color.surface'))
       .shadow({ radius: 6, color: '#26000000', offsetX: 0, offsetY: 2 })
       .onClick(() => {
         this.atBottom = true;
@@ -1923,7 +2131,9 @@ struct ChatPage {
   build() {
     Stack() {
       Column() {
-        if (this.searchMode) {
+        if (this.selecting) {
+          this.selectionHeader();
+        } else if (this.searchMode) {
           this.searchHeader();
         } else {
           this.header();
@@ -1937,6 +2147,26 @@ struct ChatPage {
           // to hold the scroll position when older pages are prepended above.
           LazyForEach(this.groupsData, (g: AlbumGroup) => {
             ListItem() {
+              Stack({ alignContent: Alignment.Start }) {
+              // Selection mode shifts the row right into a left check gutter
+              // (instead of overlaying the check on the avatars).
+              Row() {
+              if (this.selecting && g.head.contentType !== 'system' && g.head.contentType !== 'hidden') {
+                Column() {
+                  if (this.rowSelected(g)) {
+                    SymbolGlyph($r('sys.symbol.checkmark_circle'))
+                      .fontSize(22).fontColor([COLOR_PRIMARY]);
+                  } else {
+                    Row()
+                      .width(20).height(20).borderRadius(10)
+                      .border({ width: 1.5, color: '#8E8E93' });
+                  }
+                }
+                .width(34)
+                .justifyContent(FlexAlign.Center)
+                .alignItems(HorizontalAlign.Center);
+              }
+              Column() {
               MessageBubble({ msg: g.head, nowSec: this.nowSec, isGroup: this.isGroup, isChannel: this.isChannel,
                 showUnreadDivider: this.firstUnreadId !== 0 && g.head.id === this.firstUnreadId,
                 dateLabel: g.dateLabel,
@@ -1967,11 +2197,27 @@ struct ChatPage {
                 onCopyLink: (id: number): void => { this.copyMessageLink(id); },
                 onForwardMsg: (id: number): void => { promptAction.showToast({ message: '转发功能开发中', duration: 1500 }); },
                 onReportMsg: (id: number): void => { promptAction.showToast({ message: '举报功能开发中', duration: 1500 }); },
-                onSelectMsg: (id: number): void => { promptAction.showToast({ message: '多选功能开发中', duration: 1500 }); },
+                onSelectMsg: (id: number): void => { this.enterSelect(id); },
                 onOpenReactions: (id: number): void => { this.openReactionSheet(id); },
                 showAvatar: g.showAvatar,
                 showSenderName: g.showSenderName,
                 animateIn: this.freshSinceId !== 0 && g.head.id > this.freshSinceId });
+              }
+              .layoutWeight(1);
+              }
+              .width('100%')
+              .alignItems(VerticalAlign.Center)
+              .backgroundColor(this.selecting && this.rowSelected(g) ? $r('app.color.select_highlight') : Color.Transparent)
+              // Selection mode: the row itself takes every tap (children are
+              // excluded from hit-testing), so any tap toggles selection.
+              .hitTestBehavior(this.selecting && g.head.contentType !== 'system' && g.head.contentType !== 'hidden'
+                ? HitTestMode.Block : HitTestMode.Default)
+              .onClick(() => {
+                if (this.selecting) {
+                  this.toggleSelectRow(g);
+                }
+              });
+              }
             }
           }, (g: AlbumGroup) => g.key);
         }
@@ -1995,8 +2241,13 @@ struct ChatPage {
           }
         })
         .onScrollIndex((start: number, end: number) => {
-          this.atBottom = end >= this.groups.length - 2;
+          // Freeze the at-bottom flag while the media viewer is open — the
+          // hidden thumbnail collapses its row, faking a near-bottom index.
+          if (this.viewerMsgId === 0) {
+            this.atBottom = end >= this.groups.length - 2;
+          }
           this.curStartIdx = start;
+          this.updateFloatDate(start);
           this.markVisibleRead(end);
           this.updatePinnedFromScroll(start);
           // Prefetch: kick off the previous/next page a few rows before the edge,
@@ -2024,6 +2275,20 @@ struct ChatPage {
             .position({ x: 0, y: this.flashTop })
             .hitTestBehavior(HitTestMode.None);
         }
+        // Floating date chip at the top of the viewport — tracks the topmost
+        // visible message while scrolling, fades away when scrolling stops.
+        if (this.floatDate !== '') {
+          Row() {
+            Text(this.floatDate)
+              .fontSize(12).fontColor(COLOR_TEXT_SECONDARY).fontWeight(FontWeight.Medium)
+              .backgroundColor($r('app.color.system_pill')).borderRadius(11)
+              .padding({ left: 10, right: 10, top: 3, bottom: 3 });
+          }
+          .width('100%').justifyContent(FlexAlign.Center).margin({ top: 8 })
+          .opacity(this.floatDateShown ? 1 : 0)
+          .animation({ duration: 250, curve: Curve.EaseOut })
+          .hitTestBehavior(HitTestMode.None);
+        }
         }
         .layoutWeight(1).width('100%')
         .alignContent(Alignment.TopStart);
@@ -2042,7 +2307,7 @@ struct ChatPage {
             Blank().layoutWeight(1);
           }
           .width('100%').padding({ left: 20, right: 20, top: 12, bottom: 4 + this.bottomInset() })
-          .backgroundColor(Color.White);
+          .backgroundColor($r('app.color.surface'));
         } else {
           if (this.replyToId !== 0) {
             this.replyPreview();
@@ -2052,7 +2317,7 @@ struct ChatPage {
       }
       .width('100%').height('100%')
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
-      .backgroundColor('#EFEFF4');
+      .backgroundColor($r('app.color.chat_bg'));
 
       // Emoji/sticker panel OVERLAYS the chat (not in the layout flow): the
       // message list keeps its height, so its scrollbar/FAB stay put, and the
@@ -2065,6 +2330,12 @@ struct ChatPage {
             if (this.panelContentReady) {
               EmojiPanel({
                 onPick: (e: string): void => { this.insertEmoji(e); },
+                onPickCustomEmoji: (e: string, ceId: string): void => {
+                  if (this.store !== null) {
+                    this.atBottom = true;
+                    this.store.sendCustomEmoji(e, ceId);
+                  }
+                },
                 onPickSticker: (s: StickerItem): void => {
                   if (this.store !== null) {
                     this.atBottom = true;
@@ -2081,7 +2352,7 @@ struct ChatPage {
             }
           }
           .width('100%').height(300)
-          .backgroundColor(Color.White)
+          .backgroundColor($r('app.color.surface'))
           .shadow({ radius: 12, color: '#22000000', offsetX: 0, offsetY: -2 })
           // Hero-style: grow out of the smiley button, shrink back into it.
           .transition(TransitionEffect.scale({ x: 0.05, y: 0.05, centerX: this.emojiBtnCx, centerY: '100%' })
@@ -2091,7 +2362,11 @@ struct ChatPage {
         .width('100%').height('100%')
         .justifyContent(FlexAlign.End)
         .padding({ bottom: this.inputBarH })
-        .hitTestBehavior(HitTestMode.Transparent);
+        // None (not Transparent): the wrapper itself never hit-tests, so the
+        // panel child blocks touches over its own area (Transparent leaked
+        // panel taps through to the list, whose onTouch dismissed the panel),
+        // while the area outside the panel still reaches the list/input bar.
+        .hitTestBehavior(HitTestMode.None);
       }
       if (this.showReactionSheet) {
         this.reactionSheet();
@@ -2102,7 +2377,7 @@ struct ChatPage {
           Row() {
             SymbolGlyph($r('sys.symbol.chevron_up')).fontSize(22).fontColor([COLOR_TEXT_PRIMARY]);
           }
-          .width(46).height(46).borderRadius(23).backgroundColor(Color.White)
+          .width(46).height(46).borderRadius(23).backgroundColor($r('app.color.surface'))
           .justifyContent(FlexAlign.Center)
           .shadow({ radius: 6, color: '#26000000', offsetX: 0, offsetY: 2 })
           .opacity(this.searchIdx + 1 < this.searchTotal ? 1 : 0.4)
@@ -2110,7 +2385,7 @@ struct ChatPage {
           Row() {
             SymbolGlyph($r('sys.symbol.chevron_down')).fontSize(22).fontColor([COLOR_TEXT_PRIMARY]);
           }
-          .width(46).height(46).borderRadius(23).backgroundColor(Color.White)
+          .width(46).height(46).borderRadius(23).backgroundColor($r('app.color.surface'))
           .justifyContent(FlexAlign.Center)
           .shadow({ radius: 6, color: '#26000000', offsetX: 0, offsetY: 2 })
           .opacity(this.searchIdx > 0 ? 1 : 0.4)
@@ -2145,7 +2420,7 @@ struct ChatPage {
                 .width(40).height(40)
                 .onClick(() => { this.closeViewer(); });
                 if (this.viewerFileName() !== '') {
-                  Text(this.viewerFileName()).fontSize(13).fontColor('#F3F4F6').fontWeight(FontWeight.Medium)
+                  Text(this.viewerFileName()).fontSize(13).fontColor($r('app.color.surface_alt')).fontWeight(FontWeight.Medium)
                     .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
                     .flexShrink(1)
                     .constraintSize({ maxWidth: 220 });

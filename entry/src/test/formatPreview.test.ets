@@ -25,7 +25,7 @@ export default function formatPreviewTest() {
       cap['text'] = '';
       const c: TdObject = { '@type': 'messagePhoto' };
       c['caption'] = cap;
-      expect(formatPreview(msg(c))).assertEqual('📷 Photo');
+      expect(formatPreview(msg(c))).assertEqual('📷 照片');
     });
     it('photo_with_caption', 0, () => {
       const cap: TdObject = { '@type': 'formattedText' };
@@ -39,19 +39,23 @@ export default function formatPreviewTest() {
       st['emoji'] = '🎉';
       const c: TdObject = { '@type': 'messageSticker' };
       c['sticker'] = st;
-      expect(formatPreview(msg(c))).assertEqual('🎉 Sticker');
+      expect(formatPreview(msg(c))).assertEqual('🎉 贴纸');
     });
     it('voice', 0, () => {
       const c: TdObject = { '@type': 'messageVoiceNote' };
-      expect(formatPreview(msg(c))).assertEqual('🎤 Voice message');
+      expect(formatPreview(msg(c))).assertEqual('🎤 语音消息');
+    });
+    it('poll_no_question', 0, () => {
+      const c: TdObject = { '@type': 'messagePoll' };
+      expect(formatPreview(msg(c))).assertEqual('📊 投票');
     });
     it('unknown_fallback', 0, () => {
-      const c: TdObject = { '@type': 'messagePoll' };
-      expect(formatPreview(msg(c))).assertEqual('Message');
+      const c: TdObject = { '@type': 'messageSomeFutureType' };
+      expect(formatPreview(msg(c))).assertEqual('[通知]');
     });
     it('video_no_caption', 0, () => {
       const c: TdObject = { '@type': 'messageVideo' };
-      expect(formatPreview(msg(c))).assertEqual('📹 Video');
+      expect(formatPreview(msg(c))).assertEqual('📹 视频');
     });
     it('video_with_caption', 0, () => {
       const cap: TdObject = { '@type': 'formattedText' }; cap['text'] = 'trip';
@@ -60,7 +64,7 @@ export default function formatPreviewTest() {
     });
     it('document', 0, () => {
       const c: TdObject = { '@type': 'messageDocument' };
-      expect(formatPreview(msg(c))).assertEqual('📎 File');
+      expect(formatPreview(msg(c))).assertEqual('📎 文件');
     });
     it('animation', 0, () => {
       const c: TdObject = { '@type': 'messageAnimation' };
@@ -68,16 +72,16 @@ export default function formatPreviewTest() {
     });
     it('audio', 0, () => {
       const c: TdObject = { '@type': 'messageAudio' };
-      expect(formatPreview(msg(c))).assertEqual('🎵 Audio');
+      expect(formatPreview(msg(c))).assertEqual('🎵 音乐');
     });
     it('location', 0, () => {
       const c: TdObject = { '@type': 'messageLocation' };
-      expect(formatPreview(msg(c))).assertEqual('📍 Location');
+      expect(formatPreview(msg(c))).assertEqual('📍 位置');
     });
     it('sticker_no_emoji', 0, () => {
       const st: TdObject = { '@type': 'sticker' }; st['emoji'] = '';
       const c: TdObject = { '@type': 'messageSticker' }; c['sticker'] = st;
-      expect(formatPreview(msg(c))).assertEqual('Sticker');
+      expect(formatPreview(msg(c))).assertEqual('贴纸');
     });
     it('text_missing_inner', 0, () => {
       const inner: TdObject = { '@type': 'formattedText' };

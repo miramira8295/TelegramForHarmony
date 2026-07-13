@@ -1,0 +1,57 @@
+import { generateBarcode, scanCore } from '@kit.ScanKit';
+import { image } from '@kit.ImageKit';
+import { COLOR_TEXT_PRIMARY, COLOR_TEXT_SECONDARY } from '../../util/theme';
+
+// Shared QR dialog: renders a t.me link as a scannable code (ScanKit).
+@CustomDialog
+export struct QrDialog {
+  controller?: CustomDialogController;
+  link: string = '';
+  title: string = '';
+  @State pix: image.PixelMap | null = null;
+  @State failed: boolean = false;
+
+  aboutToAppear(): void {
+    const options: generateBarcode.CreateOptions = {
+      scanType: scanCore.ScanType.QR_CODE,
+      height: 400,
+      width: 400
+    };
+    generateBarcode.createBarcode(this.link, options).then((p: image.PixelMap) => {
+      this.pix = p;
+    }).catch((e: Object) => {
+      console.error(`QrDialog.createBarcode failed: ${JSON.stringify(e)}`);
+      this.failed = true;
+    });
+  }
+
+  build() {
+    Column({ space: 14 }) {
+      Text(this.title)
+        .fontSize(17).fontWeight(FontWeight.Bold).fontColor(COLOR_TEXT_PRIMARY)
+        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        .constraintSize({ maxWidth: 240 });
+      // White backing keeps the code scannable in dark mode.
+      Column() {
+        if (this.pix !== null) {
+          Image(this.pix).width(220).height(220);
+        } else if (this.failed) {
+          Text('二维码生成失败').fontSize(14).fontColor(COLOR_TEXT_SECONDARY)
+            .width(220).height(220).textAlign(TextAlign.Center);
+        } else {
+          Column() {
+            LoadingProgress().width(32).height(32).color(COLOR_TEXT_SECONDARY);
+          }.width(220).height(220).justifyContent(FlexAlign.Center);
+        }
+      }
+      .backgroundColor(Color.White).padding(10).borderRadius(10);
+      Text(this.link).fontSize(13).fontColor(COLOR_TEXT_SECONDARY)
+        .copyOption(CopyOptions.LocalDevice)
+        .textAlign(TextAlign.Center);
+    }
+    .padding(24)
+    .backgroundColor($r('app.color.surface'))
+    .borderRadius(16)
+    .alignItems(HorizontalAlign.Center);
+  }
+}

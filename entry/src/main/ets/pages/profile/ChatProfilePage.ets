@@ -2,11 +2,12 @@ import { router, promptAction } from '@kit.ArkUI';
 import { getTdClient } from '../../tdkit/Globals';
 import { ChatProfileStore, MemberItem } from '../../store/ChatProfileStore';
 import { AvatarView } from '../chatlist/AvatarView';
+import { QrDialog } from '../common/QrDialog';
 import { TdObject, TdRequest, TdError } from '../../tdkit/TdTypes';
 import { COLOR_PRIMARY, COLOR_TEXT_PRIMARY, COLOR_TEXT_SECONDARY } from '../../util/theme';
 import { ExpandableText } from './ExpandableText';
 
-const CARD_BG: ResourceColor = Color.White;
+const CARD_BG: ResourceColor = $r('app.color.surface');
 const CARD_RADIUS: number = 14;
 
 // Group / channel detail page — visually mirrors ProfilePage (header, action
@@ -18,6 +19,7 @@ struct ChatProfilePage {
   @State title: string = '';
   @State initials: string = '?';
   @State avatarPath: string = '';
+  @State avatarAnimPath: string = '';
   @State subtitle: string = '';
   @State description: string = '';
   @State chatUsername: string = '';
@@ -42,6 +44,21 @@ struct ChatProfilePage {
     if (this.store !== null) { this.store.close(); this.store = null; }
   }
 
+  @State qrLink: string = '';
+  private qrCtrl: CustomDialogController = new CustomDialogController({
+    builder: QrDialog({ link: this.qrLink, title: this.title }),
+    alignment: DialogAlignment.Center,
+    autoCancel: true
+  });
+
+  private openQr(): void {
+    if (this.chatUsername === '') {
+      return;
+    }
+    this.qrLink = `https://t.me/${this.chatUsername}`;
+    this.qrCtrl.open();
+  }
+
   // Mirror the store snapshot into @State (plain-field reads don't re-render).
   private refresh(): void {
     const s = this.store;
@@ -51,6 +68,7 @@ struct ChatProfilePage {
     this.title = s.title;
     this.initials = s.initials;
     this.avatarPath = s.avatarPath;
+    this.avatarAnimPath = s.avatarAnimPath;
     this.subtitle = s.subtitle;
     this.description = s.description;
     this.chatUsername = s.username;
@@ -93,7 +111,7 @@ struct ChatProfilePage {
     Row() {
       SymbolGlyph($r(symbol)).fontSize(22).fontColor([COLOR_TEXT_PRIMARY]);
     }
-    .width(40).height(40).borderRadius(20).backgroundColor(Color.White)
+    .width(40).height(40).borderRadius(20).backgroundColor($r('app.color.surface'))
     .justifyContent(FlexAlign.Center)
     .shadow({ radius: 4, color: '#12000000', offsetX: 0, offsetY: 1 })
     .onClick(onTap);
@@ -139,7 +157,7 @@ struct ChatProfilePage {
 
   @Builder
   sectionDivider() {
-    Divider().color('#EDEDED').strokeWidth(0.7);
+    Divider().color($r('app.color.divider')).strokeWidth(0.7);
   }
 
   @Builder
@@ -152,7 +170,8 @@ struct ChatProfilePage {
       }.width('100%').padding({ left: 12, right: 12 });
       AvatarView({
         avatarPath: this.avatarPath, initials: this.initials,
-        colorSeed: this.chatId, avatarSize: 100
+        colorSeed: this.chatId, avatarSize: 100,
+        animPath: this.avatarAnimPath
       });
       Text(this.title)
         .fontSize(20).fontWeight(FontWeight.Bold).fontColor(COLOR_TEXT_PRIMARY)
@@ -198,7 +217,8 @@ struct ChatProfilePage {
               Text(`@${this.chatUsername}`).fontSize(15).fontColor(COLOR_PRIMARY).copyOption(CopyOptions.LocalDevice);
               Text('链接').fontSize(12).fontColor(COLOR_TEXT_SECONDARY);
             }.alignItems(HorizontalAlign.Start).layoutWeight(1);
-            SymbolGlyph($r('sys.symbol.qrcode')).fontSize(22).fontColor([COLOR_TEXT_SECONDARY]);
+            SymbolGlyph($r('sys.symbol.qrcode')).fontSize(22).fontColor([COLOR_TEXT_SECONDARY])
+              .onClick(() => { this.openQr(); });
           }
           .width('100%').padding({ top: 8, bottom: 8 })
           .alignItems(VerticalAlign.Center);
@@ -236,7 +256,7 @@ struct ChatProfilePage {
             .alignItems(VerticalAlign.Center)
             .onClick(() => { this.openMemberProfile(m.userId); });
             if (idx < this.members.length - 1) {
-              Divider().color('#EDEDED').strokeWidth(0.7).margin({ left: 50 });
+              Divider().color($r('app.color.divider')).strokeWidth(0.7).margin({ left: 50 });
             }
           }.width('100%');
         }, (m: MemberItem) => `${m.userId}_${m.avatarPath}`);
@@ -263,7 +283,9 @@ struct ChatProfilePage {
     .width('100%').height('100%')
     .align(Alignment.Top)
     .scrollBar(BarState.Off)
-    .backgroundColor('#EFEFF4')
+    .backgroundColor($r('app.color.page_bg'))
+    // Member list pages in automatically as the page scrolls to the bottom.
+    .onReachEnd(() => { if (this.store !== null) { this.store.loadMoreMembers(); } })
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM]);
   }
 }

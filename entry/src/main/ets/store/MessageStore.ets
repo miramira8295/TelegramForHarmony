@@ -67,10 +67,31 @@ export class MessageStore {
   private memberCount: number = 0;
   private onlineCount: number = 0;
 
-  constructor(client: TdClient, users: UserStore, chatId: number) {
+  // >0: this store is scoped to one message thread (channel-post comments) —
+  // history comes from getMessageThreadHistory and sends target the thread.
+  private threadRootId: number = 0;
+
+  constructor(client: TdClient, users: UserStore, chatId: number, threadRootId: number = 0) {
     this.client = client;
     this.users = users;
     this.chatId = chatId;
+    this.threadRootId = threadRootId;
+  }
+
+  // getChatHistory, or getMessageThreadHistory when scoped to a comment thread
+  // (same paging contract: from_message_id + offset + limit).
+  private historyRequest(fromId: number, offset: number): TdRequest {
+    const req: TdRequest = { '@type': this.threadRootId > 0 ? 'getMessageThreadHistory' : 'getChatHistory' };
+    req['chat_id'] = this.chatId;
+    req['from_message_id'] = fromId;
+    req['offset'] = offset;
+    req['limit'] = PAGE;
+    if (this.threadRootId > 0) {
+      req['message_id'] = this.threadRootId;
+    } else {
+      req['only_local'] = false;
+    }
+    return req;
   }
 
   open(aroundMessageId?: number): void {
@@ -99,6 +120,25 @@ export class MessageStore {
     this.requestedAroundMessageId = aroundMessageId !== undefined ? aroundMessageId : 0;
     this.resolveChat();
     this.resolvePinned();
+    if (this.threadRootId > 0) {
+      this.fetchThreadRoot();
+    }
+  }
+
+  // Comment thread: the root (the channel post as forwarded into the discussion
+  // group) heads the view — thread history alone may not include it.
+  private fetchThreadRoot(): void {
+    const req: TdRequest = { '@type': 'getMessage' };
+    req['chat_id'] = this.chatId;
+    req['message_id'] = this.threadRootId;
+    this.client.send(req).then((m: TdObject) => {
+      this.upsert(buildMessageEntry(m, this.users));
+      this.requestPhotos();
+      this.resolveSenderAvatars();
+      this.notify();
+    }).catch((e: TdError) => {
+      console.error(`MessageStore.fetchThreadRoot failed: ${e.message}`);
+    });
   }
 
   close(): void {
@@ -207,12 +247,7 @@ export class MessageStore {
       return;
     }
     this.olderPending = true;
-    const req: TdRequest = { '@type': 'getChatHistory' };
-    req['chat_id'] = this.chatId;
-    req['from_message_id'] = this.oldestId;
-    req['offset'] = 0;
-    req['limit'] = PAGE;
-    req['only_local'] = false;
+    const req = this.historyRequest(this.oldestId, 0);
     this.client.send(req).then((res: TdObject) => {
       this.olderPending = false;
       this.onHistory(res);
@@ -251,12 +286,7 @@ export class MessageStore {
     }
     const newestId = this.messages[this.messages.length - 1].id;
     this.newerPending = true;
-    const req: TdRequest = { '@type': 'getChatHistory' };
-    req['chat_id'] = this.chatId;
-    req['from_message_id'] = newestId;
-    req['offset'] = -(PAGE - 1);
-    req['limit'] = PAGE;
-    req['only_local'] = false;
+    const req = this.historyRequest(newestId, -(PAGE - 1));
     this.client.send(req).then((res: TdObject) => {
       this.newerPending = false;
       const arr = (res['messages'] as TdObject[] | undefined) ?? [];
@@ -292,6 +322,9 @@ export class MessageStore {
       req['reply_to'] = rt;
     }
     req['input_message_content'] = content;
+    if (this.threadRootId > 0) {
+      req['message_thread_id'] = this.threadRootId;
+    }
     this.client.send(req).then((m: TdObject) => {
       this.upsert(buildMessageEntry(m, this.users));
       this.resolveReplies();
@@ -355,6 +388,9 @@ export class MessageStore {
     const req: TdRequest = { '@type': 'sendMessage' };
     req['chat_id'] = this.chatId;
     req['input_message_content'] = content;
+    if (this.threadRootId > 0) {
+      req['message_thread_id'] = this.threadRootId;
+    }
     this.client.send(req).then((m: TdObject) => {
       this.upsert(buildMessageEntry(m, this.users));
       this.notify();
@@ -368,6 +404,9 @@ export class MessageStore {
     const req: TdRequest = { '@type': 'sendMessage' };
     req['chat_id'] = this.chatId;
     req['input_message_content'] = content;
+    if (this.threadRootId > 0) {
+      req['message_thread_id'] = this.threadRootId;
+    }
     this.client.send(req).then((m: TdObject) => {
       this.upsert(buildMessageEntry(m, this.users));
       this.notify();
@@ -444,12 +483,7 @@ export class MessageStore {
   }
 
   private loadHistory(fromId: number): void {
-    const req: TdRequest = { '@type': 'getChatHistory' };
-    req['chat_id'] = this.chatId;
-    req['from_message_id'] = fromId;
-    req['offset'] = 0;
-    req['limit'] = PAGE;
-    req['only_local'] = false;
+    const req = this.historyRequest(fromId, 0);
     this.client.send(req).then((res: TdObject) => this.onHistory(res)).catch((e: TdError) => {
       const code = (e as TdError).code;
       if (code !== 404) {
@@ -495,6 +529,10 @@ export class MessageStore {
   private onNewMessage(u: TdObject): void {
     const m = u['message'] as TdObject | undefined;
     if (m === undefined || (m['chat_id'] as number | undefined) !== this.chatId) {
+      return;
+    }
+    // Thread mode: only messages of this thread belong in the view.
+    if (this.threadRootId > 0 && (m['message_thread_id'] as number | undefined) !== this.threadRootId) {
       return;
     }
     this.upsert(buildMessageEntry(m, this.users));
@@ -666,7 +704,86 @@ export class MessageStore {
     });
   }
 
+  // Single-custom-emoji messages: resolve the emoji's sticker once, then
+  // morph every message carrying it into a normal sticker bubble (the
+  // existing sticker download pipeline takes over).
+  private customEmojiRequested: Set<string> = new Set();
+
+  private resolveCustomEmojis(): void {
+    for (const e of this.messages) {
+      if (e.contentType !== 'customEmoji' || e.customEmojiId === '' || this.customEmojiRequested.has(e.customEmojiId)) {
+        continue;
+      }
+      const ceId = e.customEmojiId;
+      this.customEmojiRequested.add(ceId);
+      console.info(`MessageStore: resolving custom emoji ${ceId} for msg ${e.id}`);
+      const req: TdRequest = { '@type': 'getCustomEmojiStickers' };
+      req['custom_emoji_ids'] = [ceId];
+      this.client.send(req).then((res: TdObject) => {
+        const stickers = (res['stickers'] as TdObject[] | undefined) ?? [];
+        console.info(`MessageStore: custom emoji ${ceId} -> ${stickers.length} stickers`);
+        if (stickers.length === 0) {
+          return;
+        }
+        const st = stickers[0];
+        const fmt = st['format'] as TdObject | undefined;
+        const fmtName = fmt !== undefined ? ((fmt['@type'] as string | undefined) ?? '') : '';
+        const format = fmtName === 'stickerFormatWebp' ? 'webp'
+          : (fmtName === 'stickerFormatTgs' ? 'tgs' : 'webm');
+        const file = st['sticker'] as TdObject | undefined;
+        const srcId = file !== undefined ? ((file['id'] as number | undefined) ?? 0) : 0;
+        const thumb = st['thumbnail'] as TdObject | undefined;
+        const tf = thumb !== undefined ? (thumb['file'] as TdObject | undefined) : undefined;
+        const thumbId = tf !== undefined ? ((tf['id'] as number | undefined) ?? 0) : 0;
+        let changed = false;
+        this.messages = this.messages.map((m: MessageEntry) => {
+          if (m.contentType !== 'customEmoji' || m.customEmojiId !== ceId) {
+            return m;
+          }
+          changed = true;
+          const c = cloneMessage(m);
+          c.contentType = 'sticker';
+          c.stickerFormat = format;
+          c.photoWidth = 100;
+          c.photoHeight = 100;
+          if (format === 'webp') {
+            c.photoFileId = srcId;
+            c.stickerFileId = 0;
+          } else {
+            c.photoFileId = thumbId;
+            c.stickerFileId = srcId;
+          }
+          return c;
+        });
+        if (changed) {
+          this.requestPhotos(); // kick thumb + source downloads
+          this.notify();
+        }
+      }).catch((err: TdError) => {
+        console.error(`MessageStore.getCustomEmojiStickers(${ceId}) failed: ${err.message}`);
+      });
+    }
+  }
+
+  // Send one custom emoji as its own message (formattedText + custom-emoji
+  // entity — the receiver renders the animated emoji).
+  sendCustomEmoji(emoji: string, customEmojiId: string): void {
+    const ent: TdObject = { '@type': 'textEntity' };
+    ent['offset'] = 0;
+    ent['length'] = emoji.length; // UTF-16 units — matches TDLib's convention
+    const entType: TdObject = { '@type': 'textEntityTypeCustomEmoji' };
+    entType['custom_emoji_id'] = customEmojiId;
+    ent['type'] = entType;
+    const ft: TdObject = { '@type': 'formattedText' };
+    ft['text'] = emoji;
+    ft['entities'] = [ent];
+    const content: TdObject = { '@type': 'inputMessageText' };
+    content['text'] = ft;
+    this.sendContent(content, 'sendCustomEmoji');
+  }
+
   private requestPhotos(): void {
+    this.resolveCustomEmojis();
     for (const e of this.messages) {
       if ((e.contentType === 'photo' || e.contentType === 'video' || e.contentType === 'sticker')
         && e.photoFileId !== 0 && e.photoPath === '') {
@@ -738,7 +855,10 @@ export class MessageStore {
 
   // On-demand full video download (triggered by tapping to play). The inline
   // bubble only ever downloads the thumbnail (photoFileId).
-  requestVideoDownload(messageId: number): void {
+  // register=true (user-initiated file/video downloads) goes through TDLib's
+  // download manager (addFileToDownloads) so the search page's 下载 tab can
+  // list it with live progress; auto-downloads (voice prefetch) stay silent.
+  requestVideoDownload(messageId: number, register: boolean = false): void {
     const idx = this.indexOf(messageId);
     if (idx < 0) {
       return;
@@ -748,9 +868,13 @@ export class MessageStore {
       return;
     }
     this.videoFileToMsg.set(e.videoFileId, messageId);
-    const req: TdRequest = { '@type': 'downloadFile' };
+    const req: TdRequest = { '@type': register ? 'addFileToDownloads' : 'downloadFile' };
     req['file_id'] = e.videoFileId;
     req['priority'] = PHOTO_PRIORITY;
+    if (register) {
+      req['chat_id'] = this.chatId;
+      req['message_id'] = messageId;
+    }
     this.client.send(req).then((f: TdObject) => this.applyFile(f)).catch((err: TdError) => {
       console.error(`MessageStore video ${e.videoFileId}: ${err.message}`);
     });
@@ -876,7 +1000,74 @@ export class MessageStore {
     return `${isUser ? 'u' : 'c'}${senderId}`;
   }
 
+  // Messages sent AS a chat (posting-as-channel / anonymous admins) carry a
+  // messageSenderChat — their display name/avatar come from getChat, not the
+  // user store (senderName() leaves them empty).
+  private chatSenderNames: Map<number, string> = new Map();
+  private chatSenderRequested: Set<number> = new Set();
+
+  private resolveChatSenders(): void {
+    for (const e of this.messages) {
+      if (e.senderIsUser || e.senderId === 0 || e.senderId === this.chatId) {
+        continue;
+      }
+      const cached = this.chatSenderNames.get(e.senderId);
+      if (cached !== undefined && cached !== '') {
+        this.applyChatSenderName(e.senderId, cached);
+        continue;
+      }
+      if (this.chatSenderRequested.has(e.senderId)) {
+        continue;
+      }
+      this.chatSenderRequested.add(e.senderId);
+      const senderId = e.senderId;
+      const req: TdRequest = { '@type': 'getChat' };
+      req['chat_id'] = senderId;
+      this.client.send(req).then((chat: TdObject) => {
+        const title = (chat['title'] as string | undefined) ?? '';
+        if (title !== '') {
+          this.chatSenderNames.set(senderId, title);
+          this.applyChatSenderName(senderId, title);
+        }
+        const photo = chat['photo'] as TdObject | undefined;
+        const small = photo !== undefined ? (photo['small'] as TdObject | undefined) : undefined;
+        const fileId = small !== undefined ? ((small['id'] as number | undefined) ?? 0) : 0;
+        const key = this.senderKey(senderId, false);
+        if (fileId > 0 && !this.senderRequested.has(key)) {
+          this.senderRequested.add(key);
+          this.avatarFileToSender.set(fileId, key);
+          const dl: TdRequest = { '@type': 'downloadFile' };
+          dl['file_id'] = fileId;
+          dl['priority'] = PHOTO_PRIORITY;
+          this.client.send(dl).then((f: TdObject) => this.applyFile(f)).catch((err: TdError) => {
+            console.error(`MessageStore chat-sender avatar ${fileId}: ${err.message}`);
+          });
+        }
+      }).catch((err: TdError) => {
+        console.error(`MessageStore.resolveChatSenders getChat(${senderId}) failed: ${err.message}`);
+      });
+    }
+  }
+
+  private applyChatSenderName(senderId: number, name: string): void {
+    let changed = false;
+    const next = this.messages.map((e: MessageEntry) => {
+      if (!e.senderIsUser && e.senderId === senderId && e.senderName !== name) {
+        changed = true;
+        const c = cloneMessage(e);
+        c.senderName = name;
+        return c;
+      }
+      return e;
+    });
+    if (changed) {
+      this.messages = next;
+      this.notify();
+    }
+  }
+
   private resolveSenderAvatars(): void {
+    this.resolveChatSenders();
     const seen = new Set<string>();
     for (const e of this.messages) {
       if (e.isOutgoing || e.senderId === 0) {
@@ -986,6 +1177,9 @@ export class MessageStore {
   // --- subtitle ---
   // Newest pinned message → one-line preview shown in the banner under the header.
   private resolvePinned(): void {
+    if (this.threadRootId > 0) {
+      return; // comment thread view — the discussion group's pins don't apply
+    }
     const filter: TdObject = { '@type': 'searchMessagesFilterPinned' };
     const req: TdRequest = { '@type': 'searchChatMessages' };
     req['chat_id'] = this.chatId;
@@ -1031,12 +1225,8 @@ export class MessageStore {
     // Jumping into the middle of history: newer messages beyond this window
     // may exist — enable downward prefetch to discover/load them.
     this.hasMoreNewer = true;
-    const req: TdRequest = { '@type': 'getChatHistory' };
-    req['chat_id'] = this.chatId;
-    req['from_message_id'] = messageId;
-    req['offset'] = -15;
+    const req = this.historyRequest(messageId, -15);
     req['limit'] = 30;
-    req['only_local'] = false;
     this.client.send(req).then((res: TdObject) => this.onHistory(res)).catch((e: TdError) => {
       console.error(`MessageStore.loadAround failed: ${e.message}`);
     });

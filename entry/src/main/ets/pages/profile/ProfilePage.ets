@@ -2,15 +2,18 @@ import { router, promptAction } from '@kit.ArkUI';
 import { getTdClient } from '../../tdkit/Globals';
 import { ProfileStore, CommonGroup, StoryItem, GiftItem, AvailGift } from '../../store/ProfileStore';
 import { AvatarView } from '../chatlist/AvatarView';
+import { QrDialog } from '../common/QrDialog';
+import { TgsStickerView } from '../chat/TgsStickerView';
+import { WebmStickerView } from '../chat/WebmStickerView';
 import { TdObject, TdRequest, TdError } from '../../tdkit/TdTypes';
 import { COLOR_PRIMARY, COLOR_TEXT_PRIMARY, COLOR_TEXT_SECONDARY } from '../../util/theme';
 import { ExpandableText } from './ExpandableText';
 import { openUrl } from '../../util/openUrl';
 import { common } from '@kit.AbilityKit';
 
-const CARD_BG: ResourceColor = Color.White;
+const CARD_BG: ResourceColor = $r('app.color.surface');
 const CARD_RADIUS: number = 14;
-const PAGE_BG: string = '#EFEFF4';
+const PAGE_BG: ResourceColor = $r('app.color.page_bg');
 
 // User profile page (Telegram-style): avatar header, quick actions, personal
 // channel card, info card (phone/bio/usernames/business), add-contact, and
@@ -27,6 +30,9 @@ struct ProfilePage {
   @State name: string = '';
   @State initials: string = '?';
   @State avatarPath: string = '';
+  @State avatarAnimPath: string = '';
+  @State statusEmojiPath: string = '';
+  @State statusEmojiFormat: string = '';
   @State statusText: string = '';
   @State phone: string = '';
   @State usernames: string[] = [];
@@ -67,6 +73,21 @@ struct ProfilePage {
     if (this.store !== null) { this.store.close(); this.store = null; }
   }
 
+  @State qrLink: string = '';
+  private qrCtrl: CustomDialogController = new CustomDialogController({
+    builder: QrDialog({ link: this.qrLink, title: this.name }),
+    alignment: DialogAlignment.Center,
+    autoCancel: true
+  });
+
+  private openQr(username: string): void {
+    if (username === '') {
+      return;
+    }
+    this.qrLink = `https://t.me/${username}`;
+    this.qrCtrl.open();
+  }
+
   // Copy the store snapshot into @State so every card re-renders on updates.
   private refresh(): void {
     const s = this.store;
@@ -76,6 +97,9 @@ struct ProfilePage {
     this.name = s.name;
     this.initials = s.initials;
     this.avatarPath = s.avatarPath;
+    this.avatarAnimPath = s.avatarAnimPath;
+    this.statusEmojiPath = s.statusEmojiPath;
+    this.statusEmojiFormat = s.statusEmojiFormat;
     this.statusText = s.statusText;
     this.phone = s.phone;
     this.usernames = s.usernames;
@@ -187,7 +211,7 @@ struct ProfilePage {
     Row() {
       SymbolGlyph($r(symbol)).fontSize(22).fontColor([COLOR_TEXT_PRIMARY]);
     }
-    .width(40).height(40).borderRadius(20).backgroundColor(Color.White)
+    .width(40).height(40).borderRadius(20).backgroundColor($r('app.color.surface'))
     .justifyContent(FlexAlign.Center)
     .shadow({ radius: 4, color: '#12000000', offsetX: 0, offsetY: 1 })
     .onClick(onTap);
@@ -226,12 +250,20 @@ struct ProfilePage {
       }.width('100%').padding({ left: 12, right: 12 });
       AvatarView({
         avatarPath: this.avatarPath, initials: this.initials,
-        colorSeed: this.userId, avatarSize: 100
+        colorSeed: this.userId, avatarSize: 100,
+        animPath: this.avatarAnimPath
       });
-      Text(this.name)
-        .fontSize(20).fontWeight(FontWeight.Bold).fontColor(COLOR_TEXT_PRIMARY)
-        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        .constraintSize({ maxWidth: '86%' });
+      Row({ space: 5 }) {
+        Text(this.name)
+          .fontSize(20).fontWeight(FontWeight.Bold).fontColor(COLOR_TEXT_PRIMARY)
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          .flexShrink(1);
+        if (this.statusEmojiPath !== '') {
+          this.statusEmoji();
+        }
+      }
+      .alignItems(VerticalAlign.Center)
+      .constraintSize({ maxWidth: '86%' });
       Text(this.statusText).fontSize(13).fontColor(COLOR_TEXT_SECONDARY);
     }
     .width('100%')
@@ -288,7 +320,7 @@ struct ProfilePage {
 
   @Builder
   sectionDivider() {
-    Divider().color('#EDEDED').strokeWidth(0.7);
+    Divider().color($r('app.color.divider')).strokeWidth(0.7);
   }
 
   @Builder
@@ -324,7 +356,8 @@ struct ProfilePage {
                 Text('用户名').fontSize(12).fontColor(COLOR_TEXT_SECONDARY);
               }
             }.alignItems(HorizontalAlign.Start).layoutWeight(1);
-            SymbolGlyph($r('sys.symbol.qrcode')).fontSize(22).fontColor([COLOR_TEXT_SECONDARY]);
+            SymbolGlyph($r('sys.symbol.qrcode')).fontSize(22).fontColor([COLOR_TEXT_SECONDARY])
+              .onClick(() => { this.openQr(this.usernames.length > 0 ? this.usernames[0] : ''); });
           }
           .width('100%').padding({ top: 8, bottom: 8 })
           .alignItems(VerticalAlign.Center);
@@ -396,7 +429,7 @@ struct ProfilePage {
       .fontSize(14)
       .fontWeight(this.profTab === index ? FontWeight.Medium : FontWeight.Normal)
       .fontColor(this.profTab === index ? COLOR_PRIMARY : COLOR_TEXT_SECONDARY)
-      .backgroundColor(this.profTab === index ? '#E3F0FB' : Color.Transparent)
+      .backgroundColor(this.profTab === index ? $r('app.color.selected_pill') : Color.Transparent)
       .borderRadius(14)
       .padding({ left: 14, right: 14, top: 5, bottom: 5 })
       .onClick(() => { this.profTab = index; });
@@ -483,7 +516,7 @@ struct ProfilePage {
           ForEach(this.groups, (g: CommonGroup, index: number) => {
             if (index > 0) {
               // Row separator, indented past the avatar (Telegram-style).
-              Divider().color('#EDEDED').strokeWidth(0.7).margin({ left: 68 });
+              Divider().color($r('app.color.divider')).strokeWidth(0.7).margin({ left: 68 });
             }
             Row({ space: 12 }) {
               AvatarView({ avatarPath: g.avatarPath, initials: g.initials, colorSeed: g.id, avatarSize: 42 });
@@ -534,11 +567,23 @@ struct ProfilePage {
         }
       }
       .width('100%').padding({ left: 12, right: 12, top: 14, bottom: 24 })
-      .backgroundColor(Color.White)
+      .backgroundColor($r('app.color.surface'))
       .borderRadius({ topLeft: 18, topRight: 18 });
     }
     .width('100%').height('100%')
     .backgroundColor('#00000066');
+  }
+
+  // Premium emoji status beside the name (animated custom emoji).
+  @Builder
+  statusEmoji() {
+    if (this.statusEmojiFormat === 'tgs') {
+      TgsStickerView({ tgsPath: this.statusEmojiPath, boxWidth: 24, boxHeight: 24 });
+    } else if (this.statusEmojiFormat === 'webm') {
+      WebmStickerView({ webmPath: this.statusEmojiPath, boxWidth: 24, boxHeight: 24 });
+    } else {
+      Image(`file://${this.statusEmojiPath}`).width(24).height(24).objectFit(ImageFit.Contain);
+    }
   }
 
   build() {

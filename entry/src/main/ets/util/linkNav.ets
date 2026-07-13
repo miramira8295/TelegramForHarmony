@@ -56,6 +56,47 @@ export function bareUsernameOf(url: string): string {
   return isUsername(parts[0]) ? parts[0] : '';
 }
 
+// Private-chat invite link (t.me/+<hash> or t.me/joinchat/<hash>) normalized
+// with an https:// scheme for TDLib's checkChatInviteLink, or '' if the URL
+// isn't an invite. t.me/+<digits only> is a phone-number link, not an invite
+// (real invite hashes always contain letters), so it's excluded.
+export function inviteLinkOf(url: string): string {
+  const raw = url.trim();
+  let rest = raw;
+  const scheme = rest.indexOf('://');
+  if (scheme >= 0) {
+    rest = rest.substring(scheme + 3);
+  }
+  const slash = rest.indexOf('/');
+  const host = (slash >= 0 ? rest.substring(0, slash) : rest).toLowerCase();
+  if (host !== 't.me' && host !== 'telegram.me' && host !== 'telegram.dog') {
+    return '';
+  }
+  if (slash < 0) {
+    return '';
+  }
+  const clean = rest.substring(slash + 1).split('?')[0].split('#')[0];
+  const parts = clean.split('/').filter((p: string) => p.length > 0);
+  if (parts.length === 1 && parts[0].startsWith('+')) {
+    const hash = parts[0].substring(1);
+    return hash !== '' && !isAllDigits(hash) ? `https://t.me/+${hash}` : '';
+  }
+  if (parts.length === 2 && parts[0].toLowerCase() === 'joinchat' && parts[1] !== '') {
+    return `https://t.me/joinchat/${parts[1]}`;
+  }
+  return '';
+}
+
+function isAllDigits(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 48 || c > 57) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function isUsername(name: string): boolean {
   if (name.length < 3 || name.length > 32) {
     return false;

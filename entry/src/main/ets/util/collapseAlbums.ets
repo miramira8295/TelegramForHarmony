@@ -39,7 +39,8 @@ function aspectRatio(m: MessageEntry): number {
 // data source diffs by key and skips notifications for key-equal rows.
 function mutableSig(m: MessageEntry): string {
   // videoPath: voice/file/video rows change rendering once the file lands.
-  let s = `${m.commentCount}_${m.forwardFrom}_${m.videoPath !== '' ? 'v' : ''}_${m.stickerPath !== '' ? 's' : ''}`;
+  // senderName: chat-sender (posting-as-channel) names resolve async.
+  let s = `${m.commentCount}_${m.forwardFrom}_${m.senderName}_${m.contentType}_${m.stickerFormat}_${m.videoPath !== '' ? 'v' : ''}_${m.stickerPath !== '' ? 's' : ''}`;
   for (const r of m.reactions) {
     s += `|${r.emoji}${r.count}${r.isChosen ? 'c' : ''}`;
   }

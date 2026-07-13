@@ -1,5 +1,5 @@
 import { COLOR_PRIMARY, COLOR_TEXT_SECONDARY } from '../../util/theme';
-import { StickerPicker, StickerItem } from './StickerPicker';
+import { StickerPicker, StickerItem, ClassicPack } from './StickerPicker';
 import { GifPicker, GifItem } from './GifPicker';
 
 interface EmojiSection {
@@ -59,11 +59,21 @@ const SECTIONS: EmojiSection[] = [
   }
 ];
 
-// Emoji picker panel styled after the official client: sectioned emoji grid +
-// bottom Emoji / Stickers / GIFs tabs (stickers & GIFs are placeholders).
+// Classic unicode sections repackaged as built-in packs for the picker.
+const CLASSIC_PACKS: ClassicPack[] = SECTIONS.map((s: EmojiSection): ClassicPack => ({
+  title: s.title,
+  icon: s.emoji[0],
+  emoji: s.emoji
+}));
+
+// Emoji picker panel styled after the official client: the emoji tab is the
+// full picker (classic unicode packs + custom-emoji packs + trending + search);
+// picking a custom emoji inserts its fallback unicode character.
 @Component
 export struct EmojiPanel {
   onPick: (emoji: string) => void = (): void => {};
+  // Premium custom emoji — sent as its own animated-emoji message.
+  onPickCustomEmoji: (emoji: string, customEmojiId: string) => void = (): void => {};
   onPickSticker: (s: StickerItem) => void = (): void => {};
   onPickGif: (g: GifItem) => void = (): void => {};
   @State tab: number = 0; // 0 Emoji / 1 Stickers / 2 GIFs
@@ -75,7 +85,7 @@ export struct EmojiPanel {
       .fontWeight(this.tab === idx ? FontWeight.Bold : FontWeight.Normal)
       .fontColor(this.tab === idx ? COLOR_PRIMARY : COLOR_TEXT_SECONDARY)
       .padding({ left: 14, right: 14, top: 6, bottom: 6 })
-      .backgroundColor(this.tab === idx ? '#EDF3FA' : Color.Transparent)
+      .backgroundColor(this.tab === idx ? $r('app.color.selected_pill') : Color.Transparent)
       .borderRadius(14)
       .onClick(() => { this.tab = idx; });
   }
@@ -83,26 +93,20 @@ export struct EmojiPanel {
   build() {
     Column() {
       if (this.tab === 0) {
-        Scroll() {
-          Column() {
-            ForEach(SECTIONS, (s: EmojiSection) => {
-              Column() {
-                Text(s.title)
-                  .fontSize(12).fontColor(COLOR_TEXT_SECONDARY).fontWeight(FontWeight.Medium)
-                  .width('100%')
-                  .padding({ left: 12, top: 8, bottom: 2 });
-                Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
-                  ForEach(s.emoji, (e: string) => {
-                    Text(e).fontSize(26).padding(5)
-                      .onClick(() => { this.onPick(e); });
-                  }, (e: string) => e);
-                }.padding({ left: 6, right: 6 });
-              }.width('100%').alignItems(HorizontalAlign.Start);
-            }, (s: EmojiSection) => s.title);
-          }.width('100%');
-        }
-        .layoutWeight(1).width('100%')
-        .scrollBar(BarState.Off);
+        Column() {
+          StickerPicker({
+            stickerType: 'custom_emoji',
+            includeTrending: true,
+            classicPacks: CLASSIC_PACKS,
+            onPick: (s: StickerItem): void => {
+              if (s.customEmojiId !== '') {
+                this.onPickCustomEmoji(s.emoji, s.customEmojiId);
+              } else if (s.emoji !== '') {
+                this.onPick(s.emoji);
+              }
+            }
+          });
+        }.layoutWeight(1).width('100%');
       } else if (this.tab === 1) {
         Column() {
           StickerPicker({ onPick: (s: StickerItem): void => { this.onPickSticker(s); } });
@@ -119,9 +123,9 @@ export struct EmojiPanel {
       }
       .width('100%').justifyContent(FlexAlign.Center)
       .padding({ top: 4, bottom: 6 })
-      .border({ width: { top: 0.7 }, color: '#EDEDED' });
+      .border({ width: { top: 0.7 }, color: $r('app.color.divider') });
     }
     .width('100%').height(300)
-    .backgroundColor(Color.White);
+    .backgroundColor($r('app.color.surface'));
   }
 }

@@ -2,10 +2,12 @@ import { getTdClient } from '../../tdkit/Globals';
 import { ContactsStore, ContactItem } from '../../store/ContactsStore';
 import { AvatarView } from '../chatlist/AvatarView';
 import { COLOR_PRIMARY, COLOR_TEXT_PRIMARY, COLOR_TEXT_SECONDARY } from '../../util/theme';
+import { TdRequest, TdObject, TdError } from '../../tdkit/TdTypes';
+import { router } from '@kit.ArkUI';
 
-const CARD_BG: ResourceColor = Color.White;
+const CARD_BG: ResourceColor = $r('app.color.surface');
 const CARD_RADIUS: number = 14;
-const PAGE_BG: string = '#EFEFF4';
+const PAGE_BG: ResourceColor = $r('app.color.page_bg');
 
 // The contacts tab: search box, invite/recent-calls shortcuts, and the contact
 // list sorted by last-seen. Title shows 正在刷新... until getContacts resolves.
@@ -35,6 +37,23 @@ export struct ContactsPage {
     if (this.store !== null) { this.store.close(); this.store = null; }
   }
 
+  // Ensure the private chat exists (TDLib may not have it loaded yet), then
+  // navigate into it — same pattern as ProfilePage.sendMessage.
+  private openChatWith(userId: number): void {
+    const req: TdRequest = { '@type': 'createPrivateChat' };
+    req['user_id'] = userId;
+    req['force'] = false;
+    getTdClient().send(req).then((chat: TdObject) => {
+      const id = chat['id'] as number | undefined;
+      if (id !== undefined) {
+        const params: Record<string, Object> = { 'chatId': id };
+        router.pushUrl({ url: 'pages/chat/ChatPage', params: params });
+      }
+    }).catch((e: TdError) => {
+      console.error(`ContactsPage.createPrivateChat failed: ${e.message}`);
+    });
+  }
+
   private filtered(): ContactItem[] {
     const q = this.query.trim().toLowerCase();
     if (q === '') {
@@ -58,23 +77,25 @@ export struct ContactsPage {
 
   @Builder
   searchBox() {
-    Row({ space: 8 }) {
-      SymbolGlyph($r('sys.symbol.magnifyingglass')).fontSize(17).fontColor([COLOR_TEXT_SECONDARY]);
-      TextInput({ text: this.query, placeholder: '搜索联系人' })
-        .layoutWeight(1).height(36).fontSize(16)
-        .backgroundColor(Color.Transparent).padding(0).borderRadius(0)
-        .placeholderColor(COLOR_TEXT_SECONDARY)
-        .onChange((v: string) => { this.query = v; });
+    Column() {
+      Row({ space: 8 }) {
+        SymbolGlyph($r('sys.symbol.magnifyingglass')).fontSize(17).fontColor([COLOR_TEXT_SECONDARY]);
+        TextInput({ text: this.query, placeholder: '搜索联系人' })
+          .layoutWeight(1).height(36).fontSize(16)
+          .backgroundColor(Color.Transparent).padding(0).borderRadius(0)
+          .placeholderColor(COLOR_TEXT_SECONDARY)
+          .onChange((v: string) => { this.query = v; });
+      }
+      .width('100%').padding({ left: 12, right: 12, top: 4, bottom: 4 })
+      .height(44)
+      .backgroundColor(CARD_BG).borderRadius(CARD_RADIUS)
+      .alignItems(VerticalAlign.Center);
     }
-    .width('100%').padding({ left: 12, right: 12, top: 4, bottom: 4 })
-    .height(44)
-    .backgroundColor(CARD_BG).borderRadius(CARD_RADIUS)
-    .alignItems(VerticalAlign.Center)
     .margin({ left: 12, right: 12, top: 4 });
   }
 
   @Builder
-  actionRow(icon: string, bg: string, label: string) {
+  actionRow(icon: string, bg: string, label: string, onTap: () => void) {
     Row({ space: 14 }) {
       Row() {
         SymbolGlyph($r(icon)).fontSize(20).fontColor([Color.White]);
@@ -84,16 +105,17 @@ export struct ContactsPage {
       Text(label).fontSize(16).fontColor(COLOR_TEXT_PRIMARY).layoutWeight(1);
     }
     .width('100%').padding({ left: 14, right: 14, top: 8, bottom: 8 })
-    .alignItems(VerticalAlign.Center);
+    .alignItems(VerticalAlign.Center)
+    .onClick(() => { onTap(); });
   }
 
   @Builder
   actionCard() {
     Column() {
       Column() {
-        this.actionRow('sys.symbol.person_badge_plus', COLOR_PRIMARY, '邀请朋友');
-        Divider().color('#EDEDED').strokeWidth(0.7).margin({ left: 68 });
-        this.actionRow('sys.symbol.phone_fill', '#34C759', '最近通话');
+        this.actionRow('sys.symbol.phone_fill', '#34C759', '最近通话', () => {
+          router.pushUrl({ url: 'pages/main/CallsPage' });
+        });
       }
       .width('100%').backgroundColor(CARD_BG).borderRadius(CARD_RADIUS)
       .padding({ top: 4, bottom: 4 });
@@ -115,7 +137,8 @@ export struct ContactsPage {
       }.alignItems(HorizontalAlign.Start).layoutWeight(1);
     }
     .width('100%').padding({ left: 14, right: 14, top: 7, bottom: 7 })
-    .alignItems(VerticalAlign.Center);
+    .alignItems(VerticalAlign.Center)
+    .onClick(() => { this.openChatWith(c.id); });
   }
 
   @Builder
@@ -127,7 +150,7 @@ export struct ContactsPage {
           .width('100%').padding({ left: 14, right: 14, top: 10, bottom: 6 });
         ForEach(this.filtered(), (c: ContactItem, index: number) => {
           if (index > 0) {
-            Divider().color('#EDEDED').strokeWidth(0.7).margin({ left: 72 });
+            Divider().color($r('app.color.divider')).strokeWidth(0.7).margin({ left: 72 });
           }
           this.contactRow(c);
         }, (c: ContactItem) => `${c.id}_${c.avatarPath}`);

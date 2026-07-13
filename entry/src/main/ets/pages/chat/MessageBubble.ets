@@ -3,6 +3,7 @@ import { TdObject } from '../../tdkit/TdTypes';
 import { AvatarView } from '../chatlist/AvatarView';
 import { TgsStickerView } from './TgsStickerView';
 import { WebmStickerView } from './WebmStickerView';
+import { SmartLoopVideo } from '../common/SmartLoopVideo';
 import { VoiceBubble } from './VoiceBubble';
 import { formatTime } from '../../util/formatTime';
 import { formatFileSize } from '../../util/formatFileSize';
@@ -193,14 +194,14 @@ export struct MessageBubble {
             Text(seg.text).fontSize(14).fontColor(COLOR_BUBBLE_TEXT).fontFamily('monospace')
               .constraintSize({ maxWidth: maxWidth - 20 }).wordBreak(WordBreak.BREAK_ALL);
           }
-          .backgroundColor('#EAEEF2').borderRadius(6)
+          .backgroundColor($r('app.color.surface_alt')).borderRadius(6)
           .padding(8).margin({ top: 4, bottom: 2 });
         } else if (seg.kind === 'quote') {
           Column() {
             Text(seg.text).fontSize(15).fontColor(COLOR_BUBBLE_TEXT)
               .constraintSize({ maxWidth: maxWidth - 20 }).wordBreak(WordBreak.BREAK_ALL);
           }
-          .backgroundColor('#EAEEF2').borderRadius(6)
+          .backgroundColor($r('app.color.surface_alt')).borderRadius(6)
           .border({ width: { left: 3 }, color: COLOR_PRIMARY })
           .padding({ left: 8, right: 8, top: 6, bottom: 6 }).margin({ top: 4, bottom: 2 });
         } else {
@@ -432,9 +433,9 @@ export struct MessageBubble {
       }
       .width('100%').padding({ left: 12, right: 10, top: 8, bottom: 8 })
       .alignItems(VerticalAlign.Center);
-      Divider().color('#EDEDED').strokeWidth(0.7);
+      Divider().color($r('app.color.divider')).strokeWidth(0.7);
       this.menuRow('sys.symbol.arrowshape_turn_up_left', '回复', false, () => { this.onReplyTo(this.msg.id); });
-      this.menuRow('sys.symbol.doc_on_doc', '复制文本', false, () => { this.onCopyText(this.msg.id); });
+      this.menuRow('sys.symbol.plus_square_on_square', '复制文本', false, () => { this.onCopyText(this.msg.id); });
       this.menuRow('sys.symbol.link', '拷贝消息链接', false, () => { this.onCopyLink(this.msg.id); });
       this.menuRow('sys.symbol.arrowshape_turn_up_right', '转发', false, () => { this.onForwardMsg(this.msg.id); });
       this.menuRow('sys.symbol.exclamationmark_circle', '举报', true, () => { this.onReportMsg(this.msg.id); });
@@ -557,7 +558,7 @@ export struct MessageBubble {
         this.richContent(this.msg.text, this.msg.textEntities, this.inlineMaxW(),
           this.timeReserveInText());
       }
-    } else if (this.msg.contentType === 'emoji') {
+    } else if (this.msg.contentType === 'emoji' || this.msg.contentType === 'customEmoji') {
       // Animated-emoji fallback: the emoji itself, big and bare (no bubble).
       Text(this.msg.text).fontSize(56).padding({ bottom: 4 });
     } else if (this.msg.contentType === 'sticker') {
@@ -567,7 +568,7 @@ export struct MessageBubble {
         TgsStickerView({ tgsPath: this.msg.stickerPath, thumbPath: this.msg.photoPath,
           boxWidth: this.stickerW(), boxHeight: this.stickerH() });
       } else if (this.msg.stickerFormat === 'webm' && this.msg.stickerPath !== '') {
-        WebmStickerView({ webmPath: this.msg.stickerPath, thumbPath: this.msg.photoPath,
+        SmartLoopVideo({ videoPath: this.msg.stickerPath, thumbPath: this.msg.photoPath,
           boxWidth: this.stickerW(), boxHeight: this.stickerH() });
       } else if (this.msg.photoPath !== '') {
         Image(this.msg.photoPath.startsWith('/') ? `file://${this.msg.photoPath}` : this.msg.photoPath)
@@ -599,7 +600,8 @@ export struct MessageBubble {
 
   // Big bare emoji / stickers render without bubble background/tail, like bare media.
   private isBareEmoji(): boolean {
-    return this.msg.contentType === 'emoji' || this.msg.contentType === 'sticker';
+    return this.msg.contentType === 'emoji' || this.msg.contentType === 'sticker'
+      || this.msg.contentType === 'customEmoji';
   }
 
   // Sticker display box: longest side capped, aspect preserved (512 fallback).
@@ -662,7 +664,7 @@ export struct MessageBubble {
       .fontSize(12).fontColor(COLOR_TEXT_SECONDARY)
       .textAlign(TextAlign.Center)
       .constraintSize({ maxWidth: this.screenW * 0.8 })
-      .backgroundColor('#DCE3EA').borderRadius(10)
+      .backgroundColor($r('app.color.system_pill')).borderRadius(10)
       .padding({ left: 10, right: 10, top: 4, bottom: 4 });
   }
 
@@ -675,7 +677,7 @@ export struct MessageBubble {
         if (this.dateLabel !== '') {
           Text(this.dateLabel)
             .fontSize(12).fontColor(COLOR_TEXT_SECONDARY).fontWeight(FontWeight.Medium)
-            .backgroundColor('#DCE3EA').borderRadius(11)
+            .backgroundColor($r('app.color.system_pill')).borderRadius(11)
             .padding({ left: 10, right: 10, top: 3, bottom: 3 })
             .margin({ bottom: 4 });
         }
@@ -688,7 +690,7 @@ export struct MessageBubble {
         Row() {
           Text(this.dateLabel)
             .fontSize(12).fontColor(COLOR_TEXT_SECONDARY).fontWeight(FontWeight.Medium)
-            .backgroundColor('#DCE3EA').borderRadius(11)
+            .backgroundColor($r('app.color.system_pill')).borderRadius(11)
             .padding({ left: 10, right: 10, top: 3, bottom: 3 });
         }.width('100%').justifyContent(FlexAlign.Center).padding({ top: 5, bottom: 3 });
       }
@@ -696,7 +698,7 @@ export struct MessageBubble {
         Text('未读消息')
           .fontSize(12).fontColor(COLOR_TEXT_SECONDARY)
           .width('100%').textAlign(TextAlign.Center)
-          .backgroundColor('#DCE3EA')
+          .backgroundColor($r('app.color.system_pill'))
           .padding({ top: 3, bottom: 3 }).margin({ bottom: 4 });
       }
       Row() {

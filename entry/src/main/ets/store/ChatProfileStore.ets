@@ -22,6 +22,7 @@ export class ChatProfileStore {
   title: string = '';
   initials: string = '?';
   avatarPath: string = '';
+  avatarAnimPath: string = ''; // animated chat photo (MPEG4), '' if none
   subtitle: string = '';      // "N 位成员" / "N 位订阅者"
   description: string = '';
   username: string = '';
@@ -166,6 +167,7 @@ export class ChatProfileStore {
       full['supergroup_id'] = this.supergroupId;
       this.send(full, 'getSupergroupFullInfo', (fi: TdObject) => {
         this.description = (fi['description'] as string | undefined) ?? '';
+        this.parsePhotoAnimation(fi['photo'] as TdObject | undefined);
         const memberCount = (fi['member_count'] as number | undefined) ?? 0;
         if (memberCount > 0) {
           this.subtitle = `${formatMemberCount(memberCount)} 位${this.isChannel ? '订阅者' : '成员'}`;
@@ -180,13 +182,44 @@ export class ChatProfileStore {
     });
   }
 
+  // Full-info photo is a chatPhoto; its optional `animation` is a small MPEG4
+  // loop (the chat's chatPhotoInfo only carries a has_animation flag).
+  private parsePhotoAnimation(photo: TdObject | undefined): void {
+    const anim = photo !== undefined ? (photo['animation'] as TdObject | undefined) : undefined;
+    const file = anim !== undefined ? (anim['file'] as TdObject | undefined) : undefined;
+    const fileId = file !== undefined ? ((file['id'] as number | undefined) ?? 0) : 0;
+    this.download(fileId, (p: string) => { this.avatarAnimPath = p; });
+  }
+
+  private memberOffset: number = 0;
+  private membersPending: boolean = false;
+  hasMoreMembers: boolean = false;
+
   private loadSupergroupMembers(): void {
+    this.memberOffset = 0;
+    this.fetchMembersPage();
+  }
+
+  // Scroll-driven: the profile page calls this near the list's end.
+  loadMoreMembers(): void {
+    if (!this.hasMoreMembers || this.membersPending || this.supergroupId === 0) {
+      return;
+    }
+    this.fetchMembersPage();
+  }
+
+  private fetchMembersPage(): void {
+    this.membersPending = true;
     const req: TdRequest = { '@type': 'getSupergroupMembers' };
     req['supergroup_id'] = this.supergroupId;
-    req['offset'] = 0;
+    req['offset'] = this.memberOffset;
     req['limit'] = MEMBER_PAGE;
     this.send(req, 'getSupergroupMembers', (res: TdObject) => {
-      this.resolveMembers((res['members'] as TdObject[] | undefined) ?? []);
+      const raw = (res['members'] as TdObject[] | undefined) ?? [];
+      this.memberOffset += raw.length;
+      this.hasMoreMembers = raw.length === MEMBER_PAGE;
+      this.membersPending = false;
+      this.resolveMembers(raw);
     });
   }
 
@@ -195,6 +228,7 @@ export class ChatProfileStore {
     req['basic_group_id'] = this.basicGroupId;
     this.send(req, 'getBasicGroupFullInfo', (fi: TdObject) => {
       this.description = (fi['description'] as string | undefined) ?? '';
+      this.parsePhotoAnimation(fi['photo'] as TdObject | undefined);
       const members = (fi['members'] as TdObject[] | undefined) ?? [];
       if (members.length > 0) {
         this.subtitle = `${formatMemberCount(members.length)} 位成员`;

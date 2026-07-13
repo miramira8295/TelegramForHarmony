@@ -5,6 +5,8 @@
     "pages/chat/ChatPage",
     "pages/profile/ProfilePage",
     "pages/profile/ChatProfilePage",
-    "pages/search/GlobalSearchPage"
+    "pages/search/GlobalSearchPage",
+    "pages/main/CallsPage",
+    "pages/main/AccountEditPage"
   ]
 }

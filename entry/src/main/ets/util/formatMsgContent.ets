@@ -22,6 +22,7 @@ export interface MsgContent {
   videoFileName: string; // original file name, '' when unknown/non-video
   photoFullFileId: number; // full-resolution photo file id, 0 when no upgrade exists
   stickerFileId?: number;  // animated sticker source file (TGS), 0/absent otherwise
+  customEmojiId?: string;  // single custom-emoji text message (resolved async)
   stickerFormat?: string;  // 'webp' | 'tgs' | 'webm', absent for non-stickers
 }
 
@@ -146,6 +147,28 @@ export function formatMsgContent(message: TdObject): MsgContent {
     const ft = content!['text'] as TdObject | undefined;
     const text = ft !== undefined ? ((ft['text'] as string | undefined) ?? '') : '';
     const lp: LinkPreviewInfo = parseLinkPreview(content!);
+    // A message that is exactly one custom emoji renders as an animated
+    // sticker (like the official client), not as its fallback character.
+    const ents = textEntities(ft);
+    if (ents.length === 1) {
+      const et = ents[0]['type'] as TdObject | undefined;
+      const etName = et !== undefined ? ((et['@type'] as string | undefined) ?? '') : '';
+      const off = (ents[0]['offset'] as number | undefined) ?? -1;
+      const len = (ents[0]['length'] as number | undefined) ?? 0;
+      if (etName === 'textEntityTypeCustomEmoji') {
+        console.info(`formatMsgContent customEmoji cand: off=${off} len=${len} textLen=${text.length}`);
+      }
+      if (etName === 'textEntityTypeCustomEmoji' && off === 0 && len >= text.length - 1 && len <= text.length) {
+        return {
+          contentType: 'customEmoji', text, photoFileId: 0, photoWidth: 0, photoHeight: 0,
+          placeholderLabel: '', entities: [],
+          customEmojiId: `${(et as TdObject)['custom_emoji_id']}`,
+          linkSiteName: '', linkTitle: '', linkDescription: '', linkDescriptionEntities: [],
+          linkPhotoFileId: 0, linkUrl: '',
+          videoDuration: 0, videoFileId: 0, videoFileSize: 0, videoMimeType: '', videoFileName: '', photoFullFileId: 0
+        };
+      }
+    }
     return {
       contentType: 'text', text, photoFileId: 0, photoWidth: 0, photoHeight: 0, placeholderLabel: '', entities: textEntities(ft),
       linkSiteName: lp.siteName, linkTitle: lp.title, linkDescription: lp.description,
@@ -261,7 +284,46 @@ export function formatMsgContent(message: TdObject): MsgContent {
     };
   }
   if (type === 'messageSticker') {
-    const sticker = content!['sticker'] as TdObject | undefined;
+    const parsed = stickerMsgContent(content!['sticker'] as TdObject | undefined);
+    if (parsed !== null) {
+      return parsed;
+    }
+  }
+  // Single-emoji messages arrive as messageAnimatedEmoji; TDLib pre-resolves
+  // the sticker (standard AND premium custom emoji) into animated_emoji.sticker.
+  if (type === 'messageAnimatedEmoji') {
+    const ae = content!['animated_emoji'] as TdObject | undefined;
+    const parsed = stickerMsgContent(ae !== undefined ? (ae['sticker'] as TdObject | undefined) : undefined);
+    if (parsed !== null) {
+      return parsed;
+    }
+    const emoji = (content!['emoji'] as string | undefined) ?? '';
+    if (emoji !== '') {
+      return {
+        contentType: 'emoji', text: emoji, photoFileId: 0, photoWidth: 0, photoHeight: 0, placeholderLabel: '', entities: [],
+        linkSiteName: '', linkTitle: '', linkDescription: '', linkDescriptionEntities: [], linkPhotoFileId: 0, linkUrl: '',
+        videoDuration: 0, videoFileId: 0, videoFileSize: 0, videoMimeType: '', videoFileName: '', photoFullFileId: 0
+      };
+    }
+  }
+  if (type === '__never__') {
+    // (folded into stickerMsgContent below)
+  }
+  // Diagnostics for the "bare 'Message' bubble" reports — identifies which
+  // TDLib content type still lacks a renderer.
+  console.info(`formatMsgContent: unhandled content type ${type ?? 'undefined'} (msg ${message['id']})`);
+  return {
+    contentType: 'other', text: '', photoFileId: 0, photoWidth: 0, photoHeight: 0, placeholderLabel: formatPreview(message), entities: [],
+    linkSiteName: '', linkTitle: '', linkDescription: '', linkDescriptionEntities: [], linkPhotoFileId: 0, linkUrl: '',
+    videoDuration: 0, videoFileId: 0, videoFileSize: 0, videoMimeType: '', videoFileName: '', photoFullFileId: 0
+  };
+}
+
+// Shared sticker → MsgContent parser (messageSticker and animated-emoji
+// stickers): WEBP renders directly, TGS/WEBM animate from the source file
+// with the raster thumbnail as placeholder. null when nothing is renderable.
+function stickerMsgContent(sticker: TdObject | undefined): MsgContent | null {
+  {
     const format = sticker !== undefined ? (sticker['format'] as TdObject | undefined) : undefined;
     const formatName = format !== undefined ? ((format['@type'] as string | undefined) ?? '') : '';
     const stickerFile = sticker !== undefined ? (sticker['sticker'] as TdObject | undefined) : undefined;
@@ -303,25 +365,6 @@ export function formatMsgContent(message: TdObject): MsgContent {
         videoDuration: 0, videoFileId: 0, videoFileSize: 0, videoMimeType: '', videoFileName: '', photoFullFileId: 0
       };
     }
+    return null;
   }
-  // Single-emoji messages arrive as messageAnimatedEmoji (TGS sticker we can't
-  // render) — fall back to the emoji string itself, drawn big and bare.
-  if (type === 'messageAnimatedEmoji') {
-    const emoji = (content!['emoji'] as string | undefined) ?? '';
-    if (emoji !== '') {
-      return {
-        contentType: 'emoji', text: emoji, photoFileId: 0, photoWidth: 0, photoHeight: 0, placeholderLabel: '', entities: [],
-        linkSiteName: '', linkTitle: '', linkDescription: '', linkDescriptionEntities: [], linkPhotoFileId: 0, linkUrl: '',
-        videoDuration: 0, videoFileId: 0, videoFileSize: 0, videoMimeType: '', videoFileName: '', photoFullFileId: 0
-      };
-    }
-  }
-  // Diagnostics for the "bare 'Message' bubble" reports — identifies which
-  // TDLib content type still lacks a renderer.
-  console.info(`formatMsgContent: unhandled content type ${type ?? 'undefined'} (msg ${message['id']})`);
-  return {
-    contentType: 'other', text: '', photoFileId: 0, photoWidth: 0, photoHeight: 0, placeholderLabel: formatPreview(message), entities: [],
-    linkSiteName: '', linkTitle: '', linkDescription: '', linkDescriptionEntities: [], linkPhotoFileId: 0, linkUrl: '',
-    videoDuration: 0, videoFileId: 0, videoFileSize: 0, videoMimeType: '', videoFileName: '', photoFullFileId: 0
-  };
 }

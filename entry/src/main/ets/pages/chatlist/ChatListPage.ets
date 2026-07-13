@@ -1,4 +1,5 @@
-import { getFolderStore, getUnreadCountStore, getChatStore } from '../../tdkit/Globals';
+import { getFolderStore, getUnreadCountStore, getChatStore, getTdClient } from '../../tdkit/Globals';
+import { TdObject } from '../../tdkit/TdTypes';
 import { FolderInfo } from '../../store/FolderStore';
 import { ChatListView } from './ChatListView';
 import { MainTabBody } from './MainTabBody';
@@ -18,6 +19,9 @@ export struct ChatListPage {
   @State selectedIndex: number = 0;
   @State searchMode: boolean = false;
   @State searchQuery: string = '';
+  // TDLib connection state as a small status hint beside the title
+  // ('' when connectionStateReady — nothing shown).
+  @State syncLabel: string = '';
   @StorageProp('topSafeHeight') topSafe: number = 0;
   // Sliding selection pill: position/size interpolated between tab frames so it
   // follows the finger during content swipes (Telegram-style).
@@ -33,6 +37,7 @@ export struct ChatListPage {
   private unsubFolders: (() => void) | null = null;
   private unsubUnread: (() => void) | null = null;
   private unsubChats: (() => void) | null = null;
+  private unsubConn: (() => void) | null = null;
   private loadedFolders: Set<string> = new Set();
 
   // Place the pill at a (possibly fractional) tab position: 1.4 = 40% of the
@@ -85,6 +90,13 @@ export struct ChatListPage {
     this.unsubUnread = getUnreadCountStore().subscribe(() => { this.refreshUnread(); });
     // any chat change recomputes folder badges (folder unread is derived from loaded chats)
     this.unsubChats = getChatStore().subscribe(() => { this.refreshUnread(); }, 'main');
+    this.unsubConn = getTdClient().onUpdate('updateConnectionState', (u: TdObject) => {
+      const st = u['state'] as TdObject | undefined;
+      const t = st !== undefined ? ((st['@type'] as string | undefined) ?? '') : '';
+      this.syncLabel = t === 'connectionStateUpdating' ? '刷新中...'
+        : (t === 'connectionStateConnecting' || t === 'connectionStateConnectingToProxy' ? '连接中...'
+          : (t === 'connectionStateWaitingForNetwork' ? '等待网络...' : ''));
+    });
   }
 
   // TDLib does not emit updateUnreadChatCount for chat folders, so load each
@@ -120,6 +132,7 @@ export struct ChatListPage {
     if (this.unsubFolders !== null) { this.unsubFolders(); this.unsubFolders = null; }
     if (this.unsubUnread !== null) { this.unsubUnread(); this.unsubUnread = null; }
     if (this.unsubChats !== null) { this.unsubChats(); this.unsubChats = null; }
+    if (this.unsubConn !== null) { this.unsubConn(); this.unsubConn = null; }
   }
 
   private tabs(): TabSpec[] {
@@ -138,7 +151,7 @@ export struct ChatListPage {
         Row() {
           SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(22).fontColor([COLOR_TEXT_PRIMARY]);
         }
-        .width(40).height(40).borderRadius(20).backgroundColor(Color.White)
+        .width(40).height(40).borderRadius(20).backgroundColor($r('app.color.surface'))
         .justifyContent(FlexAlign.Center)
         .shadow({ radius: 4, color: '#12000000', offsetX: 0, offsetY: 1 })
         .onClick(() => {
@@ -147,7 +160,7 @@ export struct ChatListPage {
         });
         TextInput({ text: this.searchQuery, placeholder: '全局搜索' })
           .layoutWeight(1).height(40)
-          .backgroundColor(Color.White).borderRadius(20)
+          .backgroundColor($r('app.color.surface')).borderRadius(20)
           .defaultFocus(true)
           .onChange((v: string) => { this.searchQuery = v; })
           .onSubmit(() => {
@@ -161,9 +174,14 @@ export struct ChatListPage {
       .alignItems(VerticalAlign.Center);
     } else {
       Row() {
-        Text('Telegram').fontSize(24).fontWeight(FontWeight.Bold).fontColor(COLOR_PRIMARY).layoutWeight(1);
+        Row({ space: 5 }) {
+          Text('Telegram').fontSize(24).fontWeight(FontWeight.Bold).fontColor(COLOR_PRIMARY);
+          if (this.syncLabel !== '') {
+            Text(this.syncLabel).fontSize(11).fontColor(COLOR_TEXT_SECONDARY).margin({ bottom: 4 });
+          }
+        }.alignItems(VerticalAlign.Bottom).layoutWeight(1);
         SymbolGlyph($r('sys.symbol.magnifyingglass')).fontSize(24).fontColor([COLOR_TEXT_SECONDARY]).margin({ right: 16 })
-          .onClick(() => { this.searchMode = true; });
+          .onClick(() => { router.pushUrl({ url: 'pages/search/GlobalSearchPage' }); });
         SymbolGlyph($r('sys.symbol.more')).fontSize(24).fontColor([COLOR_TEXT_SECONDARY]);
       }.width('100%').padding({ left: 16, right: 16, top: 12, bottom: 8 });
     }
@@ -222,7 +240,7 @@ export struct ChatListPage {
       .width('100%')
       .onAreaChange((_old: Area, area: Area) => { this.tabViewW = area.width as number; });
     }
-    .backgroundColor(Color.White)
+    .backgroundColor($r('app.color.surface'))
     .borderRadius(20)
     .clip(true)
     .margin({ left: 8, right: 8, top: 2, bottom: 8 })
