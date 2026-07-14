@@ -23,6 +23,7 @@ import { StreamingVideoPlayer } from './StreamingVideoPlayer';
 import { AlbumGroupDataSource } from './AlbumGroupDataSource';
 import { collapseAlbums, groupIndexOf, AlbumGroup } from '../../util/collapseAlbums';
 import { AvatarView } from '../chatlist/AvatarView';
+import { KEY_SEND_BY_ENTER } from '../../store/AppSettings';
 import { COLOR_PRIMARY, COLOR_TEXT_PRIMARY, COLOR_TEXT_SECONDARY } from '../../util/theme';
 import { normalizeTelegramLink, bareUsernameOf, inviteLinkOf } from '../../util/linkNav';
 import { openInviteLink } from '../../util/openTelegramLink';
@@ -65,6 +66,8 @@ struct ChatPage {
   @State avatarPath: string = '';
   @State initials: string = '?';
   @State draft: string = '';
+  // 聊天设置 → 回车键发送.
+  @StorageProp(KEY_SEND_BY_ENTER) sendByEnter: boolean = false;
   @State replyToId: number = 0;      // message being replied to (0 = none)
   @State replyToName: string = '';
   @State replyToText: string = '';
@@ -2059,6 +2062,14 @@ struct ChatPage {
           .layoutWeight(1).onChange((v: string) => {
             this.draft = v;
             this.updateSuggestions(v);
+          })
+          // 聊天设置 → 回车键发送: the IME's action key becomes 发送 and submits;
+          // otherwise it stays the default (newline / dismiss).
+          .enterKeyType(this.sendByEnter ? EnterKeyType.Send : EnterKeyType.Done)
+          .onSubmit(() => {
+            if (this.sendByEnter) {
+              this.doSend();
+            }
           })
           .onFocus(() => { this.setEmojiPanel(false); });
         SymbolGlyph($r('sys.symbol.paperclip')).fontSize(24).fontColor([COLOR_TEXT_SECONDARY])

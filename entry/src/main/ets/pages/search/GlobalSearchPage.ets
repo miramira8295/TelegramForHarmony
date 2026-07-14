@@ -67,6 +67,8 @@ const SEARCH_DEBOUNCE_MS: number = 300;
 // media the user pulled down — keep them out of the downloads list.
 const MIN_PHOTO_BYTES: number = 100 * 1024;
 const MAX_DOWNLOAD_ITEMS: number = 300;
+// Cap on pages fetched automatically when a tab's filter hides every hit.
+const MAX_AUTO_PAGES: number = 5;
 
 interface DownloadItem {
   path: string;
@@ -103,6 +105,7 @@ struct GlobalSearchPage {
   private nowSec: number = Math.floor(Date.now() / 1000);
   private seq: number = 0;
   private pagingBusy: boolean = false;
+  private autoPages: number = 0; // consecutive auto-fetched pages that rendered nothing
   private debounceTimer: number = -1;
   private store: GlobalSearchStore | null = null;
   private unsub: (() => void) | null = null;
@@ -345,15 +348,58 @@ struct GlobalSearchPage {
     return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
   }
 
+  // Rows the current tab actually shows: the 频道 tab keeps only messages from
+  // channels, so a page of hits can render as nothing at all.
+  private visibleItems(): FoundItem[] {
+    return this.tab === TAB_CHANNELS
+      ? this.items.filter((it: FoundItem) => it.isChannelChat)
+      : this.items;
+  }
+
+  // The 频道 filter can discard an entire page of hits, leaving a screen with
+  // nothing to scroll — onReachEnd would never fire and the tab would look
+  // empty while more pages exist. Pull the next pages ourselves, bounded.
+  private maybeAutoPage(): void {
+    if (this.tab !== TAB_CHANNELS || this.loading || this.pagingBusy) {
+      return;
+    }
+    if (this.visibleItems().length > 0 || this.nextOffset === '' || this.autoPages >= MAX_AUTO_PAGES) {
+      return;
+    }
+    this.autoPages += 1;
+    this.searchMessages(this.nextOffset);
+  }
+
+  // True once paging has stopped for good — only then may the tab claim there
+  // is nothing to show (a hit whose chat type is still resolving isn't a miss).
+  private searchExhausted(): boolean {
+    if (this.loading || this.pagingBusy) {
+      return false;
+    }
+    return this.tab !== TAB_CHANNELS || this.nextOffset === '' || this.autoPages >= MAX_AUTO_PAGES;
+  }
+
   private isFilterTab(): boolean {
     return filterTypeForTab(this.tab) !== '';
   }
 
 
+  // Abandon whatever is in flight: the response of a superseded request must
+  // neither land in the list nor leave the spinner running. Every path that
+  // returns without starting a new request has to call this — a stale `loading`
+  // is what makes a tab spin forever.
+  private cancelInFlight(): void {
+    this.seq++;
+    this.pagingBusy = false;
+    this.loading = false;
+    this.nextOffset = '';
+  }
+
   private runSearch(): void {
     if (this.tab === TAB_POSTS) {
       // Keyword post search burns server quota — never auto-fire; typing
       // resets back to the prompt with its explicit 搜索 button.
+      this.cancelInFlight();
       this.searchedOnce = false;
       this.items = [];
       this.loadPostsQuota();
@@ -364,6 +410,7 @@ struct GlobalSearchPage {
       this.searchMessages('');
     } else if (this.tab === TAB_DOWNLOADS) {
       // Filtered client-side — nothing to fetch.
+      this.cancelInFlight();
     } else {
       // 聊天/频道/应用: matched objects on top + a 消息 section below.
       if (this.tab !== TAB_APPS && this.store !== null) {
@@ -406,6 +453,7 @@ struct GlobalSearchPage {
     const mode: string = this.tab === TAB_POSTS ? 'posts'
       : (this.tab === TAB_PUBLIC_POSTS ? 'tagposts' : (filterType !== '' ? 'filter' : 'all'));
     if (q === '' && mode !== 'filter') {
+      this.cancelInFlight();
       this.items = [];
       this.searchedOnce = false;
       return;
@@ -459,11 +507,18 @@ struct GlobalSearchPage {
       if (this.tab === TAB_POSTS) {
         this.loadPostsQuota(); // a search just burned one — refresh the count
       }
+      // Whether a hit belongs to a channel is only known once getChat resolves,
+      // so the 频道 filter cannot be judged here — maybeAutoPage() runs again as
+      // each chat lands (see resolveTitle).
+      if (offset === '') {
+        this.autoPages = 0;
+      }
+      this.maybeAutoPage();
     }).catch((e: TdError) => {
       this.pagingBusy = false;
       this.loading = false;
       this.searchedOnce = true;
-      console.error(`GlobalSearchPage.searchPublicPosts failed: ${e.message}`);
+      console.error(`GlobalSearchPage.searchMessages failed: ${e.message}`);
     });
   }
 
@@ -591,6 +646,7 @@ struct GlobalSearchPage {
         && ((type['@type'] as string | undefined) ?? '') === 'chatTypeSupergroup'
         && (((type as TdObject)['is_channel'] as boolean | undefined) ?? false);
       this.channelFlags.set(chatId, isChannel);
+      this.maybeAutoPage();
       this.patchItems(chatId, (it: FoundItem): FoundItem => ({
         chatId: it.chatId, messageId: it.messageId, chatTitle: title,
         preview: it.preview, date: it.date,
@@ -1130,19 +1186,20 @@ struct GlobalSearchPage {
           }.width('100%').justifyContent(FlexAlign.Center).padding(16);
         } else {
           Column() {
-            ForEach(this.items.filter((it: FoundItem) => this.tab !== TAB_CHANNELS || it.isChannelChat),
-              (it: FoundItem, idx: number) => {
-                if (idx > 0) {
-                  Divider().color($r('app.color.divider')).strokeWidth(0.7).margin({ left: 70 });
-                }
-                this.msgRow(it);
-              }, (it: FoundItem) => `cm_${it.chatId}_${it.messageId}_${it.chatTitle}_${it.avatarPath}`);
+            ForEach(this.visibleItems(), (it: FoundItem, idx: number) => {
+              if (idx > 0) {
+                Divider().color($r('app.color.divider')).strokeWidth(0.7).margin({ left: 70 });
+              }
+              this.msgRow(it);
+            }, (it: FoundItem) => `cm_${it.chatId}_${it.messageId}_${it.chatTitle}_${it.avatarPath}`);
           }.width('100%');
-          if (this.items.length === 0 && this.searchedOnce) {
+          if (this.visibleItems().length === 0 && this.searchedOnce && this.searchExhausted()) {
             Text('未找到相关消息').fontSize(14).fontColor(COLOR_TEXT_SECONDARY)
               .width('100%').textAlign(TextAlign.Center).padding(16);
           }
-          if (this.nextOffset !== '') {
+          // Only while a page is actually being fetched — `nextOffset !== ''`
+          // alone would leave a spinner parked under an idle list.
+          if (this.pagingBusy) {
             Row() {
               LoadingProgress().width(22).height(22).color(COLOR_TEXT_SECONDARY);
             }.width('100%').justifyContent(FlexAlign.Center).padding(10);
@@ -1211,7 +1268,9 @@ struct GlobalSearchPage {
             this.msgRow(it);
           }
         }, (it: FoundItem) => `${it.chatId}_${it.messageId}_${it.chatTitle}_${it.avatarPath}`);
-        if (this.nextOffset !== '') {
+        // Spin only while a page is in flight — a spinner parked under an idle
+        // list reads as "stuck loading".
+        if (this.pagingBusy) {
           ListItem() {
             Row() {
               LoadingProgress().width(22).height(22).color(COLOR_TEXT_SECONDARY);

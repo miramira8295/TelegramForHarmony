@@ -6,6 +6,7 @@ import {
   setArchived, setInFolder, clearHistory, leaveOrDeleteChat, leaveLabel
 } from '../../store/ChatActions';
 import { getChatStore, getFolderStore } from '../../tdkit/Globals';
+import { KEY_THREE_LINES } from '../../store/AppSettings';
 import { CHAT_MENU_OPEN } from './ChatListFreeze';
 import { AvatarView } from './AvatarView';
 import { formatTime } from '../../util/formatTime';
@@ -18,6 +19,8 @@ export struct ChatRow {
   // The list this row is being shown in — pinning is per-list, and the menu
   // offers 取消归档 instead of 归档 inside the archive.
   @Prop listKey: string;
+  // 聊天设置 → 聊天列表视图: the preview line wraps to two lines in 三行 mode.
+  @StorageProp(KEY_THREE_LINES) threeLines: boolean = false;
 
   private folders(): FolderInfo[] {
     return getFolderStore().getFolders();
@@ -180,8 +183,9 @@ export struct ChatRow {
           }
           Text(this.chat.lastMessageText)
             .fontSize(14).fontColor(COLOR_TEXT_SECONDARY)
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1);
-        }.width('100%');
+            .maxLines(this.threeLines ? 2 : 1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1);
+        }.width('100%').alignItems(VerticalAlign.Top);
       }.layoutWeight(1).alignItems(HorizontalAlign.Start);
       Column({ space: 6 }) {
         Text(formatTime(this.chat.lastMessageDate, this.nowSec))

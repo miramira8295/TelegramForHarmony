@@ -1,6 +1,9 @@
 import { MessageEntry, ReactionInfo, InlineBtn } from '../../store/MessageEntry';
 import { TdObject } from '../../tdkit/TdTypes';
 import { AvatarView } from '../chatlist/AvatarView';
+import {
+  KEY_TEXT_SIZE, KEY_BUBBLE_RADIUS, KEY_REDUCE_ANIM, TEXT_SIZE_DEFAULT, RADIUS_DEFAULT
+} from '../../store/AppSettings';
 import { TgsStickerView } from './TgsStickerView';
 import { WebmStickerView } from './WebmStickerView';
 import { SmartLoopVideo } from '../common/SmartLoopVideo';
@@ -73,6 +76,10 @@ export struct MessageBubble {
   onOpenReactions: (messageId: number) => void = (): void => {};
   // Live arrival: slide the bubble in from below (never set for history rows).
   @Prop animateIn: boolean = false;
+  // 聊天设置 → 消息字号 / 消息圆角, applied live.
+  @StorageProp(KEY_TEXT_SIZE) msgTextSize: number = TEXT_SIZE_DEFAULT;
+  @StorageProp(KEY_BUBBLE_RADIUS) bubbleRadius: number = RADIUS_DEFAULT;
+  @StorageProp(KEY_REDUCE_ANIM) reduceAnim: boolean = false;
   @Prop showAvatar: boolean = true;     // last row of a same-sender run
   @Prop showSenderName: boolean = true; // first row of a same-sender run
 
@@ -201,7 +208,7 @@ export struct MessageBubble {
           .padding(8).margin({ top: 4, bottom: 2 });
         } else if (seg.kind === 'quote') {
           Column() {
-            Text(seg.text).fontSize(15).fontColor(COLOR_BUBBLE_TEXT)
+            Text(seg.text).fontSize(this.msgTextSize).fontColor(COLOR_BUBBLE_TEXT)
               .constraintSize({ maxWidth: maxWidth - 20 }).wordBreak(WordBreak.BREAK_ALL);
           }
           .backgroundColor($r('app.color.surface_alt')).borderRadius(6)
@@ -567,7 +574,12 @@ export struct MessageBubble {
     } else if (this.msg.contentType === 'sticker') {
       // Sticker, bare (no bubble): TGS animates via Lottie once its source file
       // is local; static WEBP (and WEBM's raster still) render as an image.
-      if (this.msg.stickerFormat === 'tgs' && this.msg.stickerPath !== '') {
+      // 聊天设置 → 减弱动态效果: show the sticker's static thumbnail instead of
+      // spinning up a Lottie/video player for every one of them.
+      if (this.reduceAnim && this.msg.photoPath !== '') {
+        Image(this.msg.photoPath.startsWith('/') ? `file://${this.msg.photoPath}` : this.msg.photoPath)
+          .width(this.stickerW()).height(this.stickerH()).objectFit(ImageFit.Contain);
+      } else if (this.msg.stickerFormat === 'tgs' && this.msg.stickerPath !== '') {
         TgsStickerView({ tgsPath: this.msg.stickerPath, thumbPath: this.msg.photoPath,
           boxWidth: this.stickerW(), boxHeight: this.stickerH() });
       } else if (this.msg.stickerFormat === 'webm' && this.msg.stickerPath !== '') {
@@ -586,7 +598,7 @@ export struct MessageBubble {
       Text() {
         Span(this.msg.placeholderLabel).fontColor(COLOR_TEXT_SECONDARY);
         Span(this.timeReserve()).fontSize(14).fontColor(Color.Transparent);
-      }.fontSize(15);
+      }.fontSize(this.msgTextSize);
     }
   }
 
@@ -765,10 +777,11 @@ export struct MessageBubble {
       .constraintSize({ maxWidth: '78%' })
       .backgroundColor(this.isBareEmoji() ? Color.Transparent
         : (this.msg.isOutgoing ? COLOR_BUBBLE_OUT : COLOR_BUBBLE_IN))
+      // The tail corner stays tight (min 2vp) however round the rest gets.
       .borderRadius({
-        topLeft: 12, topRight: 12,
-        bottomLeft: this.msg.isOutgoing ? 12 : 2,
-        bottomRight: this.msg.isOutgoing ? 2 : 12
+        topLeft: this.bubbleRadius, topRight: this.bubbleRadius,
+        bottomLeft: this.msg.isOutgoing ? this.bubbleRadius : 2,
+        bottomRight: this.msg.isOutgoing ? 2 : this.bubbleRadius
       })
       .padding(this.isBareEmoji() ? 0 : 8)
       .shadow(this.isBareEmoji() ? { radius: 0, color: Color.Transparent, offsetX: 0, offsetY: 0 }
