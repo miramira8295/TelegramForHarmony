@@ -26,10 +26,12 @@ const SETTINGS: SettingItem[] = [
     page: 'pages/main/AccountEditPage' },
   { icon: 'sys.symbol.message_fill', bg: '#FF9500', title: '聊天设置', subtitle: '字号、圆角、夜间模式与动画效果',
     page: 'pages/main/ChatSettingsPage' },
-  { icon: 'sys.symbol.lock_fill', bg: '#34C759', title: '隐私与安全', subtitle: '最后上线时间、登录设备、通行密钥', page: '' },
-  { icon: 'sys.symbol.bell_fill', bg: '#FF3B30', title: '通知', subtitle: '声音、通话、标记', page: '' },
-  { icon: 'sys.symbol.data_proportion', bg: '#007AFF', title: '数据与存储', subtitle: '媒体下载设置', page: '' },
-  { icon: 'sys.symbol.folder_fill', bg: '#34AADC', title: '聊天文件夹', subtitle: '将聊天分类到文件夹中', page: '' },
+  { icon: 'sys.symbol.lock_fill', bg: '#34C759', title: '隐私与安全', subtitle: '最后上线时间、屏蔽名单、登录设备',
+    page: 'pages/main/PrivacySecurityPage' },
+  { icon: 'sys.symbol.data_proportion', bg: '#007AFF', title: '数据与存储', subtitle: '存储占用、流量与代理',
+    page: 'pages/main/DataStoragePage' },
+  { icon: 'sys.symbol.folder_fill', bg: '#34AADC', title: '聊天文件夹', subtitle: '将聊天分类到文件夹中',
+    page: 'pages/main/ChatFoldersPage' },
   { icon: 'sys.symbol.computer', bg: '#5AC8FA', title: '设备', subtitle: '管理已连接的设备', page: '' },
   { icon: 'sys.symbol.battery_100percent', bg: '#FF9500', title: '省电', subtitle: '低电量时降低功耗', page: '' }
 ];

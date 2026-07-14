@@ -8,6 +8,14 @@
     "pages/search/GlobalSearchPage",
     "pages/main/CallsPage",
     "pages/main/AccountEditPage",
-    "pages/main/ChatSettingsPage"
+    "pages/main/ChatSettingsPage",
+    "pages/main/PrivacySecurityPage",
+    "pages/main/PrivacyRulePage",
+    "pages/main/BlockedUsersPage",
+    "pages/main/ActiveSessionsPage",
+    "pages/main/DataStoragePage",
+    "pages/main/ProxyPage",
+    "pages/main/ChatFoldersPage",
+    "pages/main/FolderEditPage"
   ]
 }
