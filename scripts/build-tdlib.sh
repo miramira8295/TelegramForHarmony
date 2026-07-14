@@ -18,12 +18,27 @@ DEST_LIB_DIR="$PROJECT_ROOT/entry/libs/arm64-v8a"
 # Pin versions this script was validated against
 # (must match tdlib-ohos-build/download/deps-version.sh)
 PIN_OPENSSL="OpenSSL_1_1_1w"
-PIN_TDLIB="6dca40bdaac8b5e66c7a793727bf3f81e9711f70"   # TDLib 1.8.54
+PIN_TDLIB="a17f87c4cff7b90b278d12b91ba0614383aaee82"   # TDLib 1.8.65
 
 # Overridable workspace locations (kept outside the repo on purpose: these
 # hold multi-GB source/build trees that should never be committed).
-BUILD_REPO_DIR="${TDLIB_BUILD_REPO_DIR:-$HOME/tdlib-ohos-build}"
-WORK_DIR="${TDLIB_WORK_DIR:-$HOME/tdlib}"
+#
+# The build directory ends up INSIDE the binary: TDLib's assertions expand
+# __FILE__, and OpenSSL compiles its OPENSSLDIR in as a constant — neither can
+# be stripped afterwards. Building under the real $HOME therefore leaks the
+# developer's username to anyone who runs `strings` on a released
+# libtdjson.so.
+#
+# The upstream scripts hardcode "$HOME/tdlib" throughout, so the workspace
+# can't simply be pointed elsewhere — instead the whole build runs with HOME
+# overridden to a neutral directory, which every one of those paths then
+# derives from.
+BUILD_HOME="${TDLIB_BUILD_HOME:-/tmp/tdbuild}"
+mkdir -p "$BUILD_HOME"
+export HOME="$BUILD_HOME"
+
+BUILD_REPO_DIR="${TDLIB_BUILD_REPO_DIR:-$BUILD_HOME/tdlib-ohos-build}"
+WORK_DIR="${TDLIB_WORK_DIR:-$BUILD_HOME/tdlib}"
 
 log() { echo "[build-tdlib] $*"; }
 die() { echo "[build-tdlib] ERROR: $*" >&2; exit 1; }
@@ -141,7 +156,23 @@ bash -n download/download-deps.sh || die "download/download-deps.sh still has a 
 # ---------------------------------------------------------------------------
 mkdir -p "$WORK_DIR"
 log "Downloading OpenSSL + TDLib sources into $WORK_DIR ..."
-bash ./download/download-deps.sh
+# FIX #3 rewrote the dangling `if` into `[ ! -d openssl ] && git clone ...`,
+# whose exit status is 1 once openssl is already there — and it is the script's
+# last command, so a re-run reports failure even though everything is present.
+# Judge by what actually landed on disk instead of by the exit code.
+bash ./download/download-deps.sh || log "download-deps.sh returned non-zero (deps likely already present) — verifying"
+[ -d "$WORK_DIR/openssl" ] || die "OpenSSL sources missing at $WORK_DIR/openssl"
+[ -d "$WORK_DIR/td" ] || die "TDLib sources missing at $WORK_DIR/td"
+
+# Upstream's deps-version.sh pins its own TDLib commit; check out the version
+# this project targets instead (kept in PIN_TDLIB above).
+CURRENT_TDLIB="$(git -C "$WORK_DIR/td" rev-parse HEAD)"
+if [ "$CURRENT_TDLIB" != "$PIN_TDLIB" ]; then
+  log "Checking out pinned TDLib $PIN_TDLIB (was $CURRENT_TDLIB) ..."
+  git -C "$WORK_DIR/td" fetch --tags origin
+  git -C "$WORK_DIR/td" checkout -f "$PIN_TDLIB"
+  rm -f "$WORK_DIR/td/.ohos-platform-patch-applied"
+fi
 
 if [ ! -f "$WORK_DIR/td/.ohos-platform-patch-applied" ]; then
   log "Applying patches/td-add-ohos-platform.patch ..."
@@ -173,6 +204,9 @@ log "Pre-generating TDLib sources on the host toolchain (FIX #5) ..."
 # 5a: mime type gperf tables (tdutils)
 (
   cd "$WORK_DIR/td/tdutils/generate"
+  # The generators write into auto/, which is not checked in (TDLib 1.8.65
+  # ships no placeholder for it) — gperf fails with "Can't open output file".
+  mkdir -p auto
   clang++ -std=c++17 -O2 -o /tmp/generate_mime_types_gperf generate_mime_types_gperf.cpp
   /tmp/generate_mime_types_gperf mime_types.txt \
     auto/mime_type_to_extension.gperf auto/extension_to_mime_type.gperf
@@ -231,5 +265,17 @@ ACTUAL_SONAME="$(patchelf --print-soname "$DEST_LIB_DIR/libtdjson.so")"
 [ "$ACTUAL_SONAME" = "libtdjson.so" ] \
   || die "SONAME normalization failed: expected libtdjson.so, got $ACTUAL_SONAME"
 log "SONAME normalized to libtdjson.so"
+
+# The linker records the build machine's library search path as RUNPATH. It is
+# useless at runtime (the HAP's libs directory is what matters) and leaks the
+# build tree's absolute path into a published binary — drop it.
+patchelf --remove-rpath "$DEST_LIB_DIR/libtdjson.so" 2>/dev/null || true
+
+# A released .so must not carry any trace of the machine that built it.
+if strings "$DEST_LIB_DIR/libtdjson.so" | grep -qE "/Users/|/Volumes/|/home/"; then
+  strings "$DEST_LIB_DIR/libtdjson.so" | grep -E "/Users/|/Volumes/|/home/" | sort -u | head
+  die "libtdjson.so embeds absolute build paths (see above). Build under a neutral WORK_DIR."
+fi
+log "No absolute build paths embedded in libtdjson.so"
 
 log "Done: $DEST_LIB_DIR/libtdjson.so"

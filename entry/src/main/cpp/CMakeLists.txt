@@ -4,6 +4,16 @@ project(TelegramForHarmony)
 
 set(NATIVERENDER_ROOT_PATH ${CMAKE_CURRENT_SOURCE_DIR})
 
+# Keep the build machine out of the shipped binary. Linking against the
+# imported libtdjson.so otherwise records its directory — an absolute path on
+# the developer's disk — as RUNPATH, and __FILE__ in any assertion would bake
+# in the source path. Both are visible to anyone running `strings` on a
+# released HAP. RUNPATH is useless at runtime anyway: the loader resolves
+# DT_NEEDED from the HAP's own libs directory.
+set(CMAKE_SKIP_BUILD_RPATH TRUE)
+set(CMAKE_SKIP_INSTALL_RPATH TRUE)
+add_compile_options(-ffile-prefix-map=${CMAKE_CURRENT_SOURCE_DIR}=.)
+
 if(DEFINED PACKAGE_FIND_FILE)
     include(${PACKAGE_FIND_FILE})
 endif()
