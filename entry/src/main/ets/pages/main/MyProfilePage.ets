@@ -14,6 +14,7 @@ import { TgsStickerView } from '../chat/TgsStickerView';
 import { WebmStickerView } from '../chat/WebmStickerView';
 import { TdObject, TdRequest, TdError } from '../../tdkit/TdTypes';
 import { COLOR_PRIMARY, COLOR_TEXT_PRIMARY, COLOR_TEXT_SECONDARY } from '../../util/theme';
+import { publicLink } from '../../util/telegramLink';
 
 const CARD_BG: ResourceColor = $r('app.color.surface');
 const CARD_RADIUS: number = 14;
@@ -76,7 +77,7 @@ export struct MyProfilePage {
       promptAction.showToast({ message: '未设置用户名，无法生成二维码', duration: 1800 });
       return;
     }
-    this.qrLink = `https://t.me/${this.usernames[0]}`;
+    this.qrLink = publicLink(this.usernames[0]);
     this.qrCtrl.open();
   }
 

@@ -1088,6 +1088,10 @@ export class MessageStore {
       }
       let fileId = 0;
       if (e.senderIsUser) {
+        // Users TDLib was never pushed (a chat opened from global search) have
+        // no photo id and no updateUser is coming unless we ask.
+        this.users.ensure(e.senderId);
+        this.backfillSenderName(e.senderId);
         fileId = this.users.photoFileId(e.senderId);
       } else if (e.senderId === this.chatId) {
         fileId = this.chatPhotoFileId;
@@ -1103,6 +1107,27 @@ export class MessageStore {
       this.client.send(req).then((f: TdObject) => this.applyFile(f)).catch((err: TdError) => {
         console.error(`MessageStore avatar ${fileId}: ${err.message}`);
       });
+    }
+  }
+
+  // Message entries snapshot the sender's name AND initials when built. For a
+  // user the cache didn't know yet both were empty, and many senders in a chat
+  // we aren't a member of never get a profile photo at all (privacy) — their
+  // initials ARE the avatar, so both fields must be backfilled once the user
+  // arrives (the LazyForEach key includes senderName, so the row re-renders).
+  private backfillSenderName(userId: number): void {
+    const name = this.users.displayName(userId);
+    if (name === '') {
+      return;
+    }
+    const initials = name.substring(0, 1).toUpperCase();
+    for (const e of this.messages) {
+      if (e.senderIsUser && e.senderId === userId && e.senderName !== name) {
+        this.patch(e.id, (c: MessageEntry) => {
+          c.senderName = name;
+          c.senderInitials = initials;
+        });
+      }
     }
   }
 

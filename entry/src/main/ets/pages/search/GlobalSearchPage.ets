@@ -482,7 +482,7 @@ struct GlobalSearchPage {
       thumbPath: '', isVideo: false, duration: '',
       avatarPath: this.avatarCache.get(chatId) ?? '',
       initials: cachedTitle.length > 0 ? cachedTitle.substring(0, 1).toUpperCase() : '?',
-      isChannelChat: false
+      isChannelChat: this.channelFlags.get(chatId) ?? false
     };
   }
 
@@ -567,8 +567,14 @@ struct GlobalSearchPage {
     });
   }
 
+  // Resolved-chat caches. All three must be cached together: resolveTitle()
+  // short-circuits on a title cache hit, so anything it resolves but does not
+  // cache (the channel flag, once) would stay at its default on every later
+  // search — which silently emptied the 频道 tab, whose message section filters
+  // on exactly that flag.
   private titles: Map<number, string> = new Map();
   private avatarCache: Map<number, string> = new Map();
+  private channelFlags: Map<number, boolean> = new Map();
 
   private resolveTitle(chatId: number): void {
     if (this.titles.has(chatId)) {
@@ -584,6 +590,7 @@ struct GlobalSearchPage {
       const isChannel = type !== undefined
         && ((type['@type'] as string | undefined) ?? '') === 'chatTypeSupergroup'
         && (((type as TdObject)['is_channel'] as boolean | undefined) ?? false);
+      this.channelFlags.set(chatId, isChannel);
       this.patchItems(chatId, (it: FoundItem): FoundItem => ({
         chatId: it.chatId, messageId: it.messageId, chatTitle: title,
         preview: it.preview, date: it.date,
@@ -626,8 +633,15 @@ struct GlobalSearchPage {
     this.hashtagPosts = this.hashtagPosts.map((it: FoundItem): FoundItem => it.chatId === chatId ? fn(it) : it);
   }
 
+  // Opening a chat that a typed query matched carries the query along: the chat
+  // page lands in its in-chat search, showing that chat's hits for the same
+  // words. Landing rows (frequent/recent) have no query, so they open normally.
   private openChat(chatId: number): void {
     const params: Record<string, Object> = { 'chatId': chatId };
+    const q = this.query.trim();
+    if (q !== '') {
+      params['searchQuery'] = q;
+    }
     router.pushUrl({ url: 'pages/chat/ChatPage', params: params });
   }
 
@@ -647,8 +661,15 @@ struct GlobalSearchPage {
     });
   }
 
+  // A message hit lands on that message AND carries the query, so the chat opens
+  // in its in-chat search with the tapped message as the current hit — ∧/∨ then
+  // walk this chat's other hits for the same words.
   private openResult(it: FoundItem): void {
     const params: Record<string, Object> = { 'chatId': it.chatId, 'jumpTo': it.messageId };
+    const q = this.query.trim();
+    if (q !== '') {
+      params['searchQuery'] = q;
+    }
     router.pushUrl({ url: 'pages/chat/ChatPage', params: params });
   }
 

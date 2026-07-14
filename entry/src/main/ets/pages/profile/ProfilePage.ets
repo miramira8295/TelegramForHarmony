@@ -10,6 +10,7 @@ import { COLOR_PRIMARY, COLOR_TEXT_PRIMARY, COLOR_TEXT_SECONDARY } from '../../u
 import { ExpandableText } from './ExpandableText';
 import { openUrl } from '../../util/openUrl';
 import { common } from '@kit.AbilityKit';
+import { publicLink } from '../../util/telegramLink';
 
 const CARD_BG: ResourceColor = $r('app.color.surface');
 const CARD_RADIUS: number = 14;
@@ -84,7 +85,7 @@ struct ProfilePage {
     if (username === '') {
       return;
     }
-    this.qrLink = `https://t.me/${username}`;
+    this.qrLink = publicLink(username);
     this.qrCtrl.open();
   }
 

@@ -67,6 +67,9 @@ export struct MessageBubble {
   onForwardMsg: (messageId: number) => void = (): void => {};
   onReportMsg: (messageId: number) => void = (): void => {};
   onSelectMsg: (messageId: number) => void = (): void => {};
+  // "转发自 X" tapped: (originChatId, originMsgId, originUserId) — chat ids for a
+  // channel/chat origin, user id for a user origin.
+  onForwardTap: (chatId: number, messageId: number, userId: number) => void = (): void => {};
   onOpenReactions: (messageId: number) => void = (): void => {};
   // Live arrival: slide the bubble in from below (never set for history rows).
   @Prop animateIn: boolean = false;
@@ -728,9 +731,17 @@ export struct MessageBubble {
       }
       Column() {
         if (this.msg.forwardFrom !== '') {
+          // Tappable when the origin is known — opens the original post, or the
+          // author's chat. A hidden-origin forward carries no ids and stays inert.
           Text(`转发自 ${this.msg.forwardFrom}`).fontSize(13).fontColor(COLOR_PRIMARY)
             .fontWeight(FontWeight.Medium).margin({ bottom: 2 })
-            .constraintSize({ maxWidth: this.inlineMaxW() });
+            .constraintSize({ maxWidth: this.inlineMaxW() })
+            .onClick(() => {
+              if (this.msg.forwardOriginChatId !== 0 || this.msg.forwardOriginUserId !== 0) {
+                this.onForwardTap(this.msg.forwardOriginChatId, this.msg.forwardOriginMsgId,
+                  this.msg.forwardOriginUserId);
+              }
+            });
         }
         if (this.isGroup && !this.msg.isOutgoing && this.msg.senderName !== '' && this.showSenderName) {
           Text(this.msg.senderName).fontSize(14).fontColor(this.senderColor()).fontWeight(FontWeight.Medium).margin({ bottom: 2 });

@@ -6,6 +6,7 @@ import { QrDialog } from '../common/QrDialog';
 import { TdObject, TdRequest, TdError } from '../../tdkit/TdTypes';
 import { COLOR_PRIMARY, COLOR_TEXT_PRIMARY, COLOR_TEXT_SECONDARY } from '../../util/theme';
 import { ExpandableText } from './ExpandableText';
+import { publicLink } from '../../util/telegramLink';
 
 const CARD_BG: ResourceColor = $r('app.color.surface');
 const CARD_RADIUS: number = 14;
@@ -55,7 +56,7 @@ struct ChatProfilePage {
     if (this.chatUsername === '') {
       return;
     }
-    this.qrLink = `https://t.me/${this.chatUsername}`;
+    this.qrLink = publicLink(this.chatUsername);
     this.qrCtrl.open();
   }
 

@@ -34,6 +34,8 @@ const PINNED_SEG_MAX: number = 5;
 // Scroll-to-bottom FAB: beyond this many groups from the end, reload the newest
 // page instead of scrolling row by row through the loaded history.
 const JUMP_RELOAD_THRESHOLD: number = 40;
+// Grace period before an entered-from-global-search chat runs its in-chat search.
+const SEARCH_ENTRY_DELAY_MS: number = 400;
 const VIEWER_CHROME_BG: string = '#6e3e3e40';
 // Emoji offered in the full reaction picker (opened from the long-press menu's
 // chevron). Ordered roughly like the official client's reaction sheet.
@@ -71,7 +73,6 @@ struct ChatPage {
   @State nowSec: number = 0;
   @State viewerMsgId: number = 0;
   @State chromeVisible: boolean = true;
-  @State viewerDlPercent: number = 100; // active video's download progress (top chrome)
   @State viewerInitIdx: number = 0; // Swiper's initial page when the viewer opens
   private viewerSwiperCtrl: SwiperController = new SwiperController();
   @State swipeDir: number = 1; // 1 = advancing forward (next), -1 = going back — drives the slide direction
@@ -153,6 +154,9 @@ struct ChatPage {
   @State searchResults: number[] = []; // message ids, newest → oldest
   @State searchTotal: number = 0;
   @State searchIdx: number = 0;        // 0-based index into searchResults
+  // Message id the chat was opened on from global search — becomes the current
+  // hit instead of the search jumping to the newest one. 0 = no anchor.
+  private searchAnchorId: number = 0;
   private searchSeq: number = 0;       // drops stale responses
   private unsubMsg: (() => void) | null = null;
   private unsubSub: (() => void) | null = null;
@@ -171,6 +175,16 @@ struct ChatPage {
     this.chatId = params !== undefined ? (params['chatId'] as number) : 0;
     const jumpTo = params !== undefined ? (params['jumpTo'] as number | undefined) : undefined;
     this.threadRootId = params !== undefined ? ((params['threadRootId'] as number | undefined) ?? 0) : 0;
+    // Entered from global search: open directly on this chat's results for the
+    // same query (the search header, the hit list and ∧/∨ navigation). With a
+    // message hit, that message is the jump target and becomes the current hit
+    // — searchAnchorId keeps the search from jumping somewhere else.
+    const incomingQuery = params !== undefined ? ((params['searchQuery'] as string | undefined) ?? '') : '';
+    if (incomingQuery !== '') {
+      this.searchMode = true;
+      this.searchQuery = incomingQuery;
+      this.searchAnchorId = jumpTo !== undefined ? jumpTo : 0;
+    }
     this.refreshHeader();
     this.unsubChat = getChatStore().subscribe(() => { this.refreshHeader(); }, 'main');
     const store = new MessageStore(getTdClient(), getUserStore(), this.chatId, this.threadRootId);
@@ -201,6 +215,11 @@ struct ChatPage {
       // isChannel resolves asynchronously (getSupergroup round-trip) after the
       // first message page can already be showing, so refresh it every notify.
       this.isChannel = this.store !== null ? this.store.getIsChannel() : false;
+      // A global-search hit opens around jumpTo and marks the initial scroll as
+      // handled before history arrives. Keep the group flag independent of that
+      // scroll state; otherwise every incoming bubble is rendered like a private
+      // chat and its sender-avatar column is omitted.
+      this.isGroup = this.store !== null ? this.store.getIsGroup() : false;
       // Private chat peer resolved → probe once for bot commands (humans
       // return an empty list); a non-empty catalog shows the 菜单 pill.
       if (!this.botProbed && this.store !== null && this.store.getPeerUserId() > 0) {
@@ -222,7 +241,6 @@ struct ChatPage {
         const fu: number = this.store !== null ? this.store.getFirstUnreadId() : 0;
         const gidx: number = fu > 0 ? groupIndexOf(groups, fu) : -1;
         this.firstUnreadId = fu > 0 && gidx >= 0 ? groups[gidx].head.id : 0;
-        this.isGroup = this.store !== null ? this.store.getIsGroup() : false;
         if (gidx >= 0) {
           // Landing mid-history at the unread boundary: atBottom defaults to
           // true, and the bottom-glue branch below would otherwise drag the
@@ -349,6 +367,15 @@ struct ChatPage {
     } else {
       store.open();
     }
+    if (this.searchMode && this.searchQuery !== '') {
+      // Let the initial history land first — runSearch jumps to the newest hit,
+      // and that jump would otherwise be undone by the initial scroll-to-bottom.
+      setTimeout(() => {
+        if (this.searchMode) {
+          this.runSearch(0, 0);
+        }
+      }, SEARCH_ENTRY_DELAY_MS);
+    }
   }
 
   aboutToDisappear(): void {
@@ -366,7 +393,6 @@ struct ChatPage {
   // Open/close wrapped in animateTo so the geometryTransition pairing (viewer
   // ↔ tapped thumbnail) animates as a hero expand/shrink.
   private openViewer(messageId: number): void {
-    this.viewerDlPercent = 100; // fresh page — player reports real progress
     animateTo({ duration: 300, curve: Curve.Friction }, () => {
       this.onMediaTap(messageId);
     });
@@ -730,6 +756,16 @@ struct ChatPage {
         promptAction.showToast({ message: '未找到相关消息', duration: 1500 });
         return;
       }
+      // Entered on a specific hit (a message tapped in global search): it is
+      // already the jump target, so just make it the current hit.
+      if (this.searchAnchorId !== 0) {
+        const at = this.searchResults.indexOf(this.searchAnchorId);
+        this.searchAnchorId = 0;
+        if (at >= 0) {
+          this.searchIdx = at;
+          return;
+        }
+      }
       this.jumpToResult(thenJumpTo);
     }).catch((e: TdError) => {
       console.error(`ChatPage.searchChatMessages failed: ${e.message}`);
@@ -833,6 +869,35 @@ struct ChatPage {
 
   // "N Comments" tap: resolve the channel post's discussion thread and open it
   // as a normal chat page on the linked discussion group, jumped to the post.
+  // "转发自 X" tapped: open the original post in its channel/chat, or — for a
+  // forward from a user — that user's private chat.
+  private onForwardTap(originChatId: number, originMsgId: number, originUserId: number): void {
+    if (originChatId !== 0) {
+      const params: Record<string, Object> = { 'chatId': originChatId };
+      if (originMsgId !== 0) {
+        params['jumpTo'] = originMsgId;
+      }
+      router.pushUrl({ url: 'pages/chat/ChatPage', params: params });
+      return;
+    }
+    if (originUserId === 0) {
+      return;
+    }
+    const req: TdRequest = { '@type': 'createPrivateChat' };
+    req['user_id'] = originUserId;
+    req['force'] = true;
+    getTdClient().send(req).then((chat: TdObject) => {
+      const id = (chat['id'] as number | undefined) ?? 0;
+      if (id !== 0) {
+        const params: Record<string, Object> = { 'chatId': id };
+        router.pushUrl({ url: 'pages/chat/ChatPage', params: params });
+      }
+    }).catch((e: TdError) => {
+      console.error(`ChatPage.onForwardTap createPrivateChat failed: ${e.message}`);
+      promptAction.showToast({ message: '无法打开来源', duration: 1500 });
+    });
+  }
+
   private onCommentTap(messageId: number): void {
     const req: TdRequest = { '@type': 'getMessageThread' };
     req['chat_id'] = this.chatId;
@@ -971,11 +1036,6 @@ struct ChatPage {
     }
   }
 
-  // Swiper page settled on a new album member.
-  private resetViewerDl(): void {
-    this.viewerDlPercent = 100;
-  }
-
   private onViewerPageChange(index: number): void {
     const ids = this.viewerSiblingIds();
     if (index < 0 || index >= ids.length) {
@@ -986,7 +1046,6 @@ struct ChatPage {
       return;
     }
     this.viewerMsgId = id;
-    this.resetViewerDl();
     if (this.store !== null && !this.viewerSiblingIsVideo(id)) {
       this.store.requestFullPhoto(id);
     }
@@ -1074,7 +1133,6 @@ struct ChatPage {
                 videoWidth: this.viewerVideoWidth(),
                 videoHeight: this.viewerVideoHeight(),
                 showControls: this.chromeVisible,
-                onDownloadProgress: (p: number): void => { this.viewerDlPercent = p; },
                 onBackgroundTap: () => { this.toggleChrome(); },
                 onSwipeNext: () => { this.switchViewer(1); },
                 onSwipePrev: () => { this.switchViewer(-1); }
@@ -1792,11 +1850,15 @@ struct ChatPage {
     .alignItems(VerticalAlign.Center);
   }
 
-  // Search-mode header: back button + a full-width query input.
+  // Search-mode header keeps the chat identity visible. Global-search message
+  // hits enter this mode directly, so omitting the avatar here made the same
+  // chat look different from one opened through the regular chat list.
   @Builder
   searchHeader() {
     Row({ space: 8 }) {
       this.circleButton('sys.symbol.chevron_left', () => { this.exitSearch(); });
+      AvatarView({ avatarPath: this.avatarPath, initials: this.initials, colorSeed: this.chatId, avatarSize: 36 })
+        .onClick(() => { this.openProfile(); });
       TextInput({ text: this.searchQuery, placeholder: '搜索' })
         .layoutWeight(1).height(40)
         .backgroundColor($r('app.color.surface')).borderRadius(20)
@@ -2182,6 +2244,9 @@ struct ChatPage {
                 },
                 onLinkTap: (u: string): void => { this.onLinkTap(u); },
                 onCommentTap: (id: number): void => { this.onCommentTap(id); },
+                onForwardTap: (cid: number, mid: number, uid: number): void => {
+                  this.onForwardTap(cid, mid, uid);
+                },
                 onBotCallback: (id: number, data: string): void => { this.onBotCallback(id, data); },
                 onAvatarTap: (uid: number): void => {
                   const params: Record<string, Object> = { 'userId': uid };
@@ -2296,7 +2361,9 @@ struct ChatPage {
           this.suggestionPanel();
         }
         if (this.searchMode) {
-          // Search bottom bar: current position / total matches.
+          // Search bottom bar: current position / total matches and result
+          // navigation. Keeping the arrows in this row makes them follow the
+          // bottom safe area instead of floating over message bubbles.
           Row() {
             Text(this.searchResults.length > 0
               // Counted from the oldest match: the newest (entry point) reads
@@ -2305,8 +2372,24 @@ struct ChatPage {
               : (this.searchTotal === 0 && this.searchQuery.trim() !== '' ? '' : '输入关键词搜索'))
               .fontSize(15).fontColor(COLOR_TEXT_PRIMARY);
             Blank().layoutWeight(1);
+            if (this.searchResults.length > 0) {
+              Row() {
+                SymbolGlyph($r('sys.symbol.chevron_up')).fontSize(22).fontColor([COLOR_TEXT_PRIMARY]);
+              }
+              .width(42).height(42).justifyContent(FlexAlign.Center)
+              .opacity(this.searchIdx + 1 < this.searchTotal ? 1 : 0.4)
+              .onClick(() => { this.searchOlder(); });
+              Row() {
+                SymbolGlyph($r('sys.symbol.chevron_down')).fontSize(22).fontColor([COLOR_TEXT_PRIMARY]);
+              }
+              .width(42).height(42).justifyContent(FlexAlign.Center)
+              .opacity(this.searchIdx > 0 ? 1 : 0.4)
+              .onClick(() => { this.searchNewer(); });
+            }
           }
-          .width('100%').padding({ left: 20, right: 20, top: 12, bottom: 4 + this.bottomInset() })
+          .width('100%').height(50 + this.bottomInset())
+          .padding({ left: 20, right: 10, bottom: this.bottomInset() })
+          .alignItems(VerticalAlign.Center)
           .backgroundColor($r('app.color.surface'));
         } else {
           if (this.replyToId !== 0) {
@@ -2371,30 +2454,6 @@ struct ChatPage {
       if (this.showReactionSheet) {
         this.reactionSheet();
       }
-      // Search result navigation: ∧ older match / ∨ newer match, right edge.
-      if (this.searchMode && this.searchResults.length > 0) {
-        Column({ space: 10 }) {
-          Row() {
-            SymbolGlyph($r('sys.symbol.chevron_up')).fontSize(22).fontColor([COLOR_TEXT_PRIMARY]);
-          }
-          .width(46).height(46).borderRadius(23).backgroundColor($r('app.color.surface'))
-          .justifyContent(FlexAlign.Center)
-          .shadow({ radius: 6, color: '#26000000', offsetX: 0, offsetY: 2 })
-          .opacity(this.searchIdx + 1 < this.searchTotal ? 1 : 0.4)
-          .onClick(() => { this.searchOlder(); });
-          Row() {
-            SymbolGlyph($r('sys.symbol.chevron_down')).fontSize(22).fontColor([COLOR_TEXT_PRIMARY]);
-          }
-          .width(46).height(46).borderRadius(23).backgroundColor($r('app.color.surface'))
-          .justifyContent(FlexAlign.Center)
-          .shadow({ radius: 6, color: '#26000000', offsetX: 0, offsetY: 2 })
-          .opacity(this.searchIdx > 0 ? 1 : 0.4)
-          .onClick(() => { this.searchNewer(); });
-        }
-        .position({ x: '100%', y: '100%' })
-        .markAnchor({ x: '100%', y: '100%' })
-        .offset({ x: -14, y: -(152 + this.bottomInset()) });
-      }
       if (!this.atBottom && !this.searchMode) {
         Column() {
           this.scrollFab();
@@ -2432,19 +2491,8 @@ struct ChatPage {
               .alignItems(VerticalAlign.Center)
               .flexShrink(1);
               Blank().layoutWeight(1).hitTestBehavior(HitTestMode.None);
-              // Video download ring — between the title and the ⋮ menu; fixed
-              // size so it can never squeeze the menu button out.
-              if (this.viewerDlPercent < 100) {
-                Stack() {
-                  Progress({ value: this.viewerDlPercent, total: 100, type: ProgressType.Ring })
-                    .width(30).height(30).color(Color.White);
-                  Text(`${this.viewerDlPercent}`).fontSize(9).fontColor(Color.White);
-                }
-                .width(38).height(38)
-                .backgroundColor(VIEWER_CHROME_BG).borderRadius(19)
-                .margin({ right: 8 })
-                .flexShrink(0);
-              }
+              // No download indicator up here: the seek bar's lighter track shows
+              // the downloaded span, and a stalled player draws a centered ring.
               // "⋮" menu — 保存到相册 etc.
               Stack() {
                 Circle({ width: 36, height: 36 }).fill(VIEWER_CHROME_BG);

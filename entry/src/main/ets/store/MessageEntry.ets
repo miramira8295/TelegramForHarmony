@@ -28,6 +28,11 @@ export interface MessageEntry {
   textEntities: TdObject[];
   forwardFrom: string;   // display name of the forward origin ('' = not forwarded)
   forwardChatId: number; // origin channel/chat id to resolve a title for (0 = none/resolved)
+  // Tappable origin of a forward: the original post (channel/chat) or its
+  // author (user). All 0 for a hidden-origin forward, which can't be opened.
+  forwardOriginChatId: number;
+  forwardOriginMsgId: number;
+  forwardOriginUserId: number;
   commentCount: number;         // channel post comment count (0 = no comments row)
   commentReplierIds: number[];  // up to 3 recent commenter user ids (for avatar stack)
   commentReplierAvatarPaths: string[]; // parallel to commentReplierIds, filled in as avatars download
@@ -107,6 +112,8 @@ export function cloneMessage(m: MessageEntry): MessageEntry {
     replySenderName: m.replySenderName, replyText: m.replyText, sendState: m.sendState,
     albumId: m.albumId, textEntities: m.textEntities,
     forwardFrom: m.forwardFrom, forwardChatId: m.forwardChatId,
+    forwardOriginChatId: m.forwardOriginChatId, forwardOriginMsgId: m.forwardOriginMsgId,
+    forwardOriginUserId: m.forwardOriginUserId,
     commentCount: m.commentCount, commentReplierIds: m.commentReplierIds,
     commentReplierAvatarPaths: m.commentReplierAvatarPaths,
     linkSiteName: m.linkSiteName, linkTitle: m.linkTitle, linkDescription: m.linkDescription,
@@ -126,6 +133,12 @@ export function cloneMessage(m: MessageEntry): MessageEntry {
 interface FwdOrigin {
   name: string;
   chatId: number;
+  // Where the forward came from, kept for the tappable "转发自" header. chatId
+  // above doubles as a "title still to resolve" marker and gets cleared once
+  // resolved, so the origin is recorded separately here.
+  originChatId: number;
+  originMsgId: number;
+  originUserId: number;
 }
 
 // Parse a message's forward_info into a display name (user/hidden origin) or a
@@ -134,22 +147,39 @@ function forwardOrigin(message: TdObject, users: UserStore): FwdOrigin {
   const fi = message['forward_info'] as TdObject | undefined;
   const origin = fi !== undefined ? (fi['origin'] as TdObject | undefined) : undefined;
   if (origin === undefined) {
-    return { name: '', chatId: 0 };
+    return { name: '', chatId: 0, originChatId: 0, originMsgId: 0, originUserId: 0 };
   }
   const ot = origin['@type'] as string | undefined;
   if (ot === 'messageOriginUser') {
-    return { name: users.displayName((origin['sender_user_id'] as number | undefined) ?? 0), chatId: 0 };
+    const uid = (origin['sender_user_id'] as number | undefined) ?? 0;
+    return {
+      name: users.displayName(uid), chatId: 0,
+      originChatId: 0, originMsgId: 0, originUserId: uid
+    };
   }
   if (ot === 'messageOriginHiddenUser') {
-    return { name: (origin['sender_name'] as string | undefined) ?? '', chatId: 0 };
+    // Origin deliberately hidden — nothing to open.
+    return {
+      name: (origin['sender_name'] as string | undefined) ?? '', chatId: 0,
+      originChatId: 0, originMsgId: 0, originUserId: 0
+    };
   }
   if (ot === 'messageOriginChannel') {
-    return { name: '', chatId: (origin['chat_id'] as number | undefined) ?? 0 };
+    const cid = (origin['chat_id'] as number | undefined) ?? 0;
+    return {
+      name: '', chatId: cid,
+      originChatId: cid, originMsgId: (origin['message_id'] as number | undefined) ?? 0,
+      originUserId: 0
+    };
   }
   if (ot === 'messageOriginChat') {
-    return { name: '', chatId: (origin['sender_chat_id'] as number | undefined) ?? 0 };
+    const cid = (origin['sender_chat_id'] as number | undefined) ?? 0;
+    return {
+      name: '', chatId: cid,
+      originChatId: cid, originMsgId: 0, originUserId: 0
+    };
   }
-  return { name: '', chatId: 0 };
+  return { name: '', chatId: 0, originChatId: 0, originMsgId: 0, originUserId: 0 };
 }
 
 export interface CommentInfo {
@@ -401,6 +431,9 @@ export function buildMessageEntry(message: TdObject, users: UserStore): MessageE
     textEntities: c.entities,
     forwardFrom: fwd.name,
     forwardChatId: fwd.chatId,
+    forwardOriginChatId: fwd.originChatId,
+    forwardOriginMsgId: fwd.originMsgId,
+    forwardOriginUserId: fwd.originUserId,
     commentCount: cmt.count,
     commentReplierIds: cmt.replierIds,
     commentReplierAvatarPaths: [],

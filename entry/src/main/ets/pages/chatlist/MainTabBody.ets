@@ -2,6 +2,7 @@ import { router } from '@kit.ArkUI';
 import { getChatStore } from '../../tdkit/Globals';
 import { ChatEntry } from '../../store/ChatEntry';
 import { ChatRow } from './ChatRow';
+import { CHAT_MENU_OPEN, ChatListFreeze } from './ChatListFreeze';
 import { COLOR_TEXT_PRIMARY, COLOR_TEXT_SECONDARY } from '../../util/theme';
 
 const ARCHIVE_ROW_HEIGHT: number = 56;
@@ -10,18 +11,36 @@ const ARCHIVE_ROW_HEIGHT: number = 56;
 @Component
 export struct MainTabBody {
   @StorageProp('bottomSafeHeight') bottomSafe: number = 0;
+  // Rebuilding rows while a row's context menu is open would close it.
+  @StorageProp(CHAT_MENU_OPEN) @Watch('onMenuToggle') menuOpen: boolean = false;
   @State chats: ChatEntry[] = [];
   @State nowSec: number = 0;
   @State showArchive: boolean = false;
   @State refreshing: boolean = false;
+  private updateGate: ChatListFreeze = new ChatListFreeze();
   private unsubscribe: (() => void) | null = null;
   private unsubArchive: (() => void) | null = null;
   private timerId: number = -1;
 
+  private onMenuToggle(): void {
+    if (this.menuOpen) {
+      return;
+    }
+    const next = this.updateGate.flush();
+    if (next !== null) {
+      this.chats = next;
+    }
+  }
+
   aboutToAppear(): void {
     this.nowSec = Math.floor(Date.now() / 1000);
     const store = getChatStore();
-    this.unsubscribe = store.subscribe((list: ChatEntry[]) => { this.chats = list; }, 'main');
+    this.unsubscribe = store.subscribe((list: ChatEntry[]) => {
+      const next = this.updateGate.accept(list);
+      if (next !== null) {
+        this.chats = next;
+      }
+    }, 'main');
     this.showArchive = store.hasArchive();
     // drive showArchive off the archive bucket itself (fires whenever it changes)
     this.unsubArchive = store.subscribe(() => { this.showArchive = getChatStore().hasArchive(); }, 'archive');
@@ -55,8 +74,8 @@ export struct MainTabBody {
   chatList() {
     List() {
       ForEach(this.chats, (item: ChatEntry) => {
-        ListItem() { ChatRow({ chat: item, nowSec: this.nowSec }); }
-      }, (item: ChatEntry, index: number) => `${item.id}_${index}_${item.unreadCount}_${item.isMuted}_${item.lastMessageDate}_${item.lastMessageText}_${item.lastSenderName}_${item.avatarPath}_${item.title}`);
+        ListItem() { ChatRow({ chat: item, nowSec: this.nowSec, listKey: 'main' }); }
+      }, (item: ChatEntry, index: number) => `${item.id}_${index}_${item.unreadCount}_${item.isMuted}_${item.lastMessageDate}_${item.lastMessageText}_${item.lastSenderName}_${item.avatarPath}_${item.title}_${item.isMarkedUnread}`);
     }
     .layoutWeight(1).width('100%')
     .contentEndOffset(this.bottomSafe + 88)

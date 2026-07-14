@@ -15,8 +15,10 @@ import { VideoStreamSession } from '../../services/VideoStreamSession';
 const CONTROL_BAR_BG: string = '#6e3e3e40';
 const CONTROL_ACCENT: string = '#FFFFFF';
 const CONTROL_TEXT_SOFT: string = '#EAEEF2'; // over dark video chrome — mode-independent
-const CONTROL_TRACK: string = '#1F2329';
-const CONTROL_TRACK_SOFT: string = '#2C3138';
+// Seek bar, back to front: unbuffered track → downloaded span → played span.
+const CONTROL_TRACK_SOFT: string = '#4C5259';       // unbuffered remainder
+const CONTROL_TRACK_SOFT_FILL: string = '#8E969E';  // downloaded but not played
+const CONTROL_TRACK: string = '#FFFFFF';            // played, matches the knob
 
 // Output device types that count as "headphones": unplugging/disconnecting one
 // of these pauses playback instead of blasting the speaker.
@@ -55,7 +57,6 @@ export struct StreamingVideoPlayer {
   onBackgroundTap: () => void = (): void => {};
   onSwipeNext: () => void = (): void => {};
   onSwipePrev: () => void = (): void => {};
-  onDownloadProgress: (percent: number) => void = (): void => {};
   private player: IjkMediaPlayer | null = null;
   private session: VideoStreamSession | null = null;
   private rangeServer: VideoRangeServer | null = null;
@@ -157,7 +158,6 @@ export struct StreamingVideoPlayer {
     this.session = session;
     this.progressUnsub = session.subscribeProgress((buffered: number, total: number): void => {
       this.bufferedPercent = total > 0 ? Math.min(100, Math.floor((buffered / total) * 100)) : 0;
-      this.onDownloadProgress(this.bufferedPercent);
     });
     session.start();
     try {
@@ -194,9 +194,9 @@ export struct StreamingVideoPlayer {
           this.currentTimeMs = this.durationMs;
         }
       };
-      // The ring tracks the actual TDLib download (subscribeProgress above), not
-      // ijk's playback buffer — ijk reports 100% long before the file is local,
-      // which used to make the ring lie and disappear early.
+      // bufferedPercent tracks the actual TDLib download (subscribeProgress
+      // above), not ijk's playback buffer — ijk reports 100% long before the
+      // file is local, which used to make the indicator lie and finish early.
       const bufferingListener: OnBufferingUpdateListener = {
         onBufferingUpdate: (): void => {}
       };
@@ -465,15 +465,21 @@ export struct StreamingVideoPlayer {
             Row({ space: 8 }) {
               Text(formatMs(this.dragging ? this.dragValueMs : this.currentTimeMs))
                 .fontSize(11).fontColor(CONTROL_TEXT_SOFT).fontWeight(FontWeight.Medium);
+              // Alignment.Start = left edge, vertically centered. With Center the
+              // partial-width fill rows get centered in the track and appear to
+              // grow outward from the middle instead of filling left-to-right.
               Stack() {
                 Row()
                   .width('100%').height(4).borderRadius(2).backgroundColor(CONTROL_TRACK_SOFT);
+                // Downloaded/buffered span — grey, behind the played fill.
+                Row()
+                  .width(`${Math.max(0, Math.min(100, this.bufferedPercent))}%`)
+                  .height(4).borderRadius(2).backgroundColor(CONTROL_TRACK_SOFT_FILL);
                 Row()
                   .width(this.durationMs > 0
                     ? `${Math.max(0, Math.min(100, ((this.dragging ? this.dragValueMs : this.currentTimeMs) / this.durationMs) * 100))}%`
                     : '0%')
-                  .height(4).borderRadius(2).backgroundColor(CONTROL_TRACK)
-                  .align(Alignment.Start);
+                  .height(4).borderRadius(2).backgroundColor(CONTROL_TRACK);
                 Slider({
                   value: this.dragging ? this.dragValueMs : this.currentTimeMs,
                   min: 0, max: this.durationMs > 0 ? this.durationMs : 1, step: 1
@@ -485,7 +491,7 @@ export struct StreamingVideoPlayer {
               }
               .layoutWeight(1)
               .height(20)
-              .align(Alignment.Center);
+              .align(Alignment.Start);
               Text(formatMs(this.durationMs)).fontSize(11).fontColor(CONTROL_TEXT_SOFT).fontWeight(FontWeight.Medium);
             }.width('100%').alignItems(VerticalAlign.Center);
           }

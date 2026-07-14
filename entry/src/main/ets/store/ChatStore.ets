@@ -1,7 +1,7 @@
 import { TdClient } from '../tdkit/TdClient';
 import { TdObject, TdRequest, TdError } from '../tdkit/TdTypes';
 import { UserStore } from './UserStore';
-import { ChatEntry, PositionInfo, cloneEntry, computeInitials, compareOrderDesc, isMutedFrom } from './ChatEntry';
+import { ChatEntry, PositionInfo, cloneEntry, computeInitials, compareOrderDesc, isMutedFrom, chatKindOf } from './ChatEntry';
 import { listKeyOf, chatListOf } from './ListKey';
 import { formatPreview } from '../util/formatPreview';
 
@@ -31,6 +31,7 @@ export class ChatStore {
     client.onUpdate('updateChatPhoto', (u: TdObject) => this.onPhoto(u));
     client.onUpdate('updateChatNotificationSettings', (u: TdObject) => this.onNotify(u));
     client.onUpdate('updateChatMessageAutoDeleteTime', (u: TdObject) => this.onAutoDelete(u));
+    client.onUpdate('updateChatIsMarkedAsUnread', (u: TdObject) => this.onMarkedUnread(u));
   }
 
   subscribe(listener: (chats: ChatEntry[]) => void, listKey: string = MAIN): () => void {
@@ -69,6 +70,20 @@ export class ChatStore {
       return compareOrderDesc(pa.order, pb.order);
     });
     return list;
+  }
+
+  // Pinning is per chat list: a chat can be pinned in a folder but not in main.
+  isPinned(listKey: string, chatId: number): boolean {
+    const pos = this.positions.get(listKey)?.get(chatId);
+    return pos !== undefined && pos.isPinned;
+  }
+
+  isArchived(chatId: number): boolean {
+    return this.positions.get('archive')?.has(chatId) === true;
+  }
+
+  isInFolder(folderId: number, chatId: number): boolean {
+    return this.positions.get(`folder:${folderId}`)?.has(chatId) === true;
   }
 
   hasArchive(): boolean {
@@ -208,11 +223,14 @@ export class ChatStore {
       unreadCount: (chat['unread_count'] as number | undefined) ?? 0,
       lastMessageText: formatPreview(lastMsg ?? null),
       lastMessageDate: lastMsg !== undefined ? ((lastMsg['date'] as number | undefined) ?? 0) : 0,
+      lastMessageId: lastMsg !== undefined ? ((lastMsg['id'] as number | undefined) ?? 0) : 0,
       lastSenderName: this.senderName(lastMsg),
       photoFileId: this.smallPhotoId(chat['photo'] as TdObject | undefined),
       avatarPath: '',
       initials: computeInitials(title),
-      autoDeleteTime: (chat['message_auto_delete_time'] as number | undefined) ?? 0
+      autoDeleteTime: (chat['message_auto_delete_time'] as number | undefined) ?? 0,
+      kind: chatKindOf(chat['type'] as TdObject | undefined),
+      isMarkedUnread: (chat['is_marked_as_unread'] as boolean | undefined) ?? false
     };
     this.chats.set(id, entry);
     const positions = (chat['positions'] as TdObject[] | undefined) ?? [];
@@ -240,6 +258,7 @@ export class ChatStore {
     const c = cloneEntry(e);
     c.lastMessageText = formatPreview(lastMsg ?? null);
     c.lastMessageDate = lastMsg !== undefined ? ((lastMsg['date'] as number | undefined) ?? 0) : 0;
+    c.lastMessageId = lastMsg !== undefined ? ((lastMsg['id'] as number | undefined) ?? 0) : 0;
     c.lastSenderName = this.senderName(lastMsg);
     this.chats.set(id, c);
     const positions = update['positions'] as TdObject[] | undefined;
@@ -296,6 +315,18 @@ export class ChatStore {
     }
     const c = cloneEntry(e);
     c.isMuted = isMutedFrom(update['notification_settings'] as TdObject | undefined);
+    this.chats.set(id, c);
+    this.notify();
+  }
+
+  private onMarkedUnread(update: TdObject): void {
+    const id = update['chat_id'] as number;
+    const e = this.chats.get(id);
+    if (e === undefined) {
+      return;
+    }
+    const c = cloneEntry(e);
+    c.isMarkedUnread = (update['is_marked_as_unread'] as boolean | undefined) ?? false;
     this.chats.set(id, c);
     this.notify();
   }
