@@ -42,6 +42,23 @@
             "actions": [
               "ohos.want.action.home"
             ]
+          },
+          {
+            // tg:// deep links (Deep Linking, no domain verification needed).
+            // https://t.me links can't auto-open a third-party client: HarmonyOS
+            // App Linking requires hosting a verification file on t.me, which
+            // only Telegram controls. scheme MUST be lowercase or the match fails.
+            "entities": [
+              "entity.system.browsable"
+            ],
+            "actions": [
+              "ohos.want.action.viewData"
+            ],
+            "uris": [
+              {
+                "scheme": "tg"
+              }
+            ]
           }
         ]
       }

@@ -12,7 +12,7 @@ import { formatTime } from '../../util/formatTime';
 import { formatFileSize } from '../../util/formatFileSize';
 import { parseFormattedText, RichSegment, RichRun } from '../../util/richText';
 import { packAlbumRows, AlbumCell } from '../../util/packAlbumRows';
-import { COLOR_PRIMARY, COLOR_TEXT_SECONDARY, COLOR_BUBBLE_OUT, COLOR_BUBBLE_IN, COLOR_BUBBLE_TEXT, AVATAR_PALETTE } from '../../util/theme';
+import { COLOR_PRIMARY, COLOR_TEXT_SECONDARY, COLOR_BUBBLE_OUT, COLOR_BUBBLE_IN, COLOR_BUBBLE_TEXT, AVATAR_PALETTE, botButtonBg } from '../../util/theme';
 
 const ALBUM_MAX_WIDTH: number = 280;
 const STICKER_MAX: number = 160;
@@ -44,10 +44,6 @@ export struct MessageBubble {
   @Prop albumCaption: string;
   albumCaptionEntities: TdObject[] = [];
   @StorageProp('screenWidthVp') screenW: number = 360;
-  // Message id of the media currently open in the fullscreen viewer — its
-  // thumbnail is temporarily removed so geometryTransition can pair it with
-  // the appearing viewer (hero expand/shrink transition).
-  @Prop hiddenMediaId: number = 0;
   // Measured width of the bubble (it shrinks to fit content) — the inline
   // keyboard below matches it exactly instead of the theoretical max width.
   @State bubbleW: number = 0;
@@ -208,8 +204,18 @@ export struct MessageBubble {
           .padding(8).margin({ top: 4, bottom: 2 });
         } else if (seg.kind === 'quote') {
           Column() {
-            Text(seg.text).fontSize(this.msgTextSize).fontColor(COLOR_BUBBLE_TEXT)
-              .constraintSize({ maxWidth: maxWidth - 20 }).wordBreak(WordBreak.BREAK_ALL);
+            // Span-based rendering keeps links inside the quote tappable.
+            Text() {
+              ForEach(seg.runs, (r: RichRun) => {
+                Span(r.text)
+                  .fontWeight(r.bold ? FontWeight.Bold : FontWeight.Normal)
+                  .fontStyle(r.italic ? FontStyle.Italic : FontStyle.Normal)
+                  .fontColor(r.link ? COLOR_PRIMARY : COLOR_BUBBLE_TEXT)
+                  .onClick(r.url !== '' ? (() => { this.onLinkTap(r.url); }) : undefined);
+              }, (r: RichRun, i: number) => `qrun_${i}_${r.text}`);
+            }
+            .fontSize(this.msgTextSize)
+            .constraintSize({ maxWidth: maxWidth - 20 }).wordBreak(WordBreak.BREAK_ALL);
           }
           .backgroundColor($r('app.color.surface_alt')).borderRadius(6)
           .border({ width: { left: 3 }, color: COLOR_PRIMARY })
@@ -261,7 +267,7 @@ export struct MessageBubble {
                 .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
                 .textAlign(TextAlign.Center)
                 .layoutWeight(1).height(36)
-                .backgroundColor('#4d000000')
+                .backgroundColor(botButtonBg(btn.style, '#4d000000'))
                 .borderRadius(8)
                 .onClick(() => {
                   if (btn.url !== '') {
@@ -323,11 +329,9 @@ export struct MessageBubble {
         Row({ space: 2 }) {
           ForEach(row, (cell: AlbumCell) => {
             Stack() {
-              if (this.albumPaths[cell.idx] !== '' && this.albumMemberIds[cell.idx] !== this.hiddenMediaId) {
+              if (this.albumPaths[cell.idx] !== '') {
                 Image(this.albumPaths[cell.idx].startsWith('/') ? `file://${this.albumPaths[cell.idx]}` : this.albumPaths[cell.idx])
-                  .width(cell.width).height(cell.height).borderRadius(4).objectFit(ImageFit.Cover)
-                  .geometryTransition(`media_${this.albumMemberIds[cell.idx]}`, { follow: true })
-                  .transition(TransitionEffect.OPACITY.animation({ duration: 250, curve: Curve.EaseOut }));
+                  .width(cell.width).height(cell.height).borderRadius(4).objectFit(ImageFit.Cover);
               } else {
                 Column().width(cell.width).height(cell.height).borderRadius(4).backgroundColor('#E0E0E0');
                 if (this.albumPaths[cell.idx] === '') {
@@ -489,15 +493,13 @@ export struct MessageBubble {
       }
     } else if (this.msg.contentType === 'photo' || this.msg.contentType === 'video') {
       Stack() {
-        if (this.msg.photoPath !== '' && this.msg.id !== this.hiddenMediaId) {
-          // geometryTransition pairs this thumbnail with the fullscreen viewer
-          // (same id): when the viewer opens this Image is removed and the
-          // viewer expands out of its frame; on close it shrinks back into it.
+        if (this.msg.photoPath !== '') {
+          // Keep the thumbnail mounted while fullscreen preview is open. ArkUI's
+          // geometry transition can re-parent this Image node; with LazyForEach
+          // recycling that occasionally restored only the placeholder/background
+          // or an undecoded blank node after returning to the chat.
           Image(this.msg.photoPath.startsWith('/') ? `file://${this.msg.photoPath}` : this.msg.photoPath)
-            .width(this.mediaBox().width).height(this.mediaBox().height).borderRadius(8).objectFit(ImageFit.Cover)
-            .geometryTransition(`media_${this.msg.id}`, { follow: true })
-            // Fade in when the downloaded thumbnail replaces the placeholder.
-            .transition(TransitionEffect.OPACITY.animation({ duration: 250, curve: Curve.EaseOut }));
+            .width(this.mediaBox().width).height(this.mediaBox().height).borderRadius(8).objectFit(ImageFit.Cover);
         } else {
           Stack() {
             Column().width(this.mediaBox().width).height(this.mediaBox().height).borderRadius(8).backgroundColor('#D8D8D8');

@@ -2,6 +2,7 @@ import { TdClient } from '../tdkit/TdClient';
 import { TdObject, TdRequest, TdError } from '../tdkit/TdTypes';
 import { UserStore } from './UserStore';
 import { MessageEntry, cloneMessage, buildMessageEntry, commentInfoFromInteraction, CommentInfo, reactionsFromInteraction, ReactionInfo, parseInlineKeyboard } from './MessageEntry';
+import { ReplyKeyboard, parseReplyKeyboard } from './ReplyKeyboard';
 import { formatUserStatus } from '../util/formatUserStatus';
 import { formatPreview } from '../util/formatPreview';
 import { formatMemberCount } from '../util/formatMemberCount';
@@ -14,6 +15,7 @@ const THUMB_REKICK_MS: number = 8000;
 
 type MsgListener = (msgs: MessageEntry[]) => void;
 type SubtitleListener = (s: string) => void;
+type ReplyKeyboardListener = (kb: ReplyKeyboard | null) => void;
 
 export class MessageStore {
   private client: TdClient;
@@ -66,6 +68,18 @@ export class MessageStore {
   private hasMoreNewer: boolean = false;
   private memberCount: number = 0;
   private onlineCount: number = 0;
+  // Bot custom reply keyboard. Chat-level: replyMarkupMessageId names the
+  // message carrying the active markup (0 = none, per chat.reply_markup_message_id).
+  private replyMarkupMessageId: number = 0;
+  private replyKeyboard: ReplyKeyboard | null = null;
+  private replyKbSubs: ReplyKeyboardListener[] = [];
+  // Fallback for when TDLib reports chat.reply_markup_message_id as 0 even though
+  // a keyboard is live (seen in supergroups, and after a one_time keyboard is
+  // used — other clients keep showing it). Tracks the NEWEST loaded message
+  // carrying a keyboard-affecting markup, and the keyboard it implies
+  // (null when that newest markup is replyMarkupRemoveKeyboard).
+  private kbMarkupMsgId: number = 0;
+  private kbFromHistory: ReplyKeyboard | null = null;
 
   // >0: this store is scoped to one message thread (channel-post comments) —
   // history comes from getMessageThreadHistory and sends target the thread.
@@ -117,6 +131,8 @@ export class MessageStore {
       }
     }));
     this.unsubs.push(this.client.onUpdate('updateMessageEdited', (u: TdObject) => this.onEdited(u)));
+    // Bot showed/removed its custom reply keyboard.
+    this.unsubs.push(this.client.onUpdate('updateChatReplyMarkup', (u: TdObject) => this.onChatReplyMarkup(u)));
     this.requestedAroundMessageId = aroundMessageId !== undefined ? aroundMessageId : 0;
     this.resolveChat();
     this.resolvePinned();
@@ -192,6 +208,84 @@ export class MessageStore {
       }
     }
     return 0;
+  }
+
+  getReplyKeyboard(): ReplyKeyboard | null {
+    return this.replyKeyboard;
+  }
+
+  subscribeReplyKeyboard(l: ReplyKeyboardListener): () => void {
+    this.replyKbSubs = [...this.replyKbSubs, l];
+    l(this.replyKeyboard);
+    return (): void => { this.replyKbSubs = this.replyKbSubs.filter((x: ReplyKeyboardListener) => x !== l); };
+  }
+
+  private setReplyKeyboard(kb: ReplyKeyboard | null): void {
+    this.replyKeyboard = kb;
+    for (const l of this.replyKbSubs) {
+      l(kb);
+    }
+  }
+
+  // Resolve replyMarkupMessageId into an actual keyboard. The message is usually
+  // already in the loaded window; otherwise fetch it (the markup often comes from
+  // a message far above the current view, so we can't rely on history alone).
+  private resolveReplyKeyboard(): void {
+    const id = this.replyMarkupMessageId;
+    if (id === 0) {
+      // TDLib reports 0 here even when a keyboard is live (supergroups; a
+      // one_time keyboard that's already been used) while other clients keep
+      // showing it — so trust the newest keyboard markup seen in history.
+      this.setReplyKeyboard(this.kbFromHistory);
+      return;
+    }
+    const req: TdRequest = { '@type': 'getMessage' };
+    req['chat_id'] = this.chatId;
+    req['message_id'] = id;
+    this.client.send(req).then((m: TdObject) => {
+      if (this.replyMarkupMessageId !== id) {
+        return; // superseded while in flight
+      }
+      this.setReplyKeyboard(parseReplyKeyboard(m));
+    }).catch((e: TdError) => {
+      console.error(`MessageStore.resolveReplyKeyboard(${id}) failed: ${e.message}`);
+      this.setReplyKeyboard(this.kbFromHistory);
+    });
+  }
+
+  private onChatReplyMarkup(u: TdObject): void {
+    if ((u['chat_id'] as number | undefined) !== this.chatId) {
+      return;
+    }
+    this.replyMarkupMessageId = (u['reply_markup_message_id'] as number | undefined) ?? 0;
+    this.resolveReplyKeyboard();
+  }
+
+  // Track the newest loaded message that shows or removes a reply keyboard.
+  // (replyMarkupInlineKeyboard is NOT one of these — those buttons live in the
+  // bubble and are rendered separately.)
+  private scanKeyboardMarkup(arr: TdObject[]): void {
+    let changed = false;
+    for (const m of arr) {
+      const mk = m['reply_markup'] as TdObject | undefined;
+      if (mk === undefined) {
+        continue;
+      }
+      const t = (mk['@type'] as string | undefined) ?? '';
+      if (t !== 'replyMarkupShowKeyboard' && t !== 'replyMarkupRemoveKeyboard') {
+        continue;
+      }
+      const id = (m['id'] as number | undefined) ?? 0;
+      if (id <= this.kbMarkupMsgId) {
+        continue; // an older markup can't override a newer one
+      }
+      this.kbMarkupMsgId = id;
+      this.kbFromHistory = t === 'replyMarkupShowKeyboard' ? parseReplyKeyboard(m) : null;
+      changed = true;
+    }
+    if (changed) {
+      this.resolveReplyKeyboard();
+    }
   }
 
   subscribe(l: MsgListener): () => void {
@@ -494,6 +588,7 @@ export class MessageStore {
 
   private onHistory(res: TdObject): void {
     const arr = (res['messages'] as TdObject[] | undefined) ?? [];
+    this.scanKeyboardMarkup(arr);
     for (const m of arr) {
       this.upsert(buildMessageEntry(m, this.users));
     }
@@ -535,6 +630,8 @@ export class MessageStore {
     if (this.threadRootId > 0 && (m['message_thread_id'] as number | undefined) !== this.threadRootId) {
       return;
     }
+    // A bot that shows/removes its keyboard does it via a message's markup.
+    this.scanKeyboardMarkup([m]);
     this.upsert(buildMessageEntry(m, this.users));
     this.resolveReplies();
     this.resolveForwardTitles();
@@ -1286,6 +1383,10 @@ export class MessageStore {
     this.downloadChatPhoto();
     this.chatTitle = (chat['title'] as string | undefined) ?? '';
     this.notifyHeaderTitle();
+    // Active bot reply keyboard for this chat (0 = none). updateChatReplyMarkup
+    // keeps it current from here on.
+    this.replyMarkupMessageId = (chat['reply_markup_message_id'] as number | undefined) ?? 0;
+    this.resolveReplyKeyboard();
     const type = chat['type'] as TdObject | undefined;
     if (type !== undefined) {
       const t = type['@type'] as string | undefined;

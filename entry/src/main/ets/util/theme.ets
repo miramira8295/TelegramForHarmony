@@ -22,3 +22,18 @@ export const COLOR_SURFACE: ResourceColor = $r('app.color.surface');
 export const COLOR_PAGE_BG: ResourceColor = $r('app.color.page_bg');
 export const COLOR_CHAT_BG: ResourceColor = $r('app.color.chat_bg');
 export const COLOR_DIVIDER: ResourceColor = $r('app.color.divider');
+
+// Bot-chosen button colors (TDLib buttonStyle*): dark blue / green / red,
+// matching the official clients. Returns `fallback` for the default style.
+export function botButtonBg(style: string, fallback: ResourceColor): ResourceColor {
+  if (style === 'primary') {
+    return $r('app.color.primary');
+  }
+  if (style === 'success') {
+    return '#34C759';
+  }
+  if (style === 'danger') {
+    return '#FF3B30';
+  }
+  return fallback;
+}

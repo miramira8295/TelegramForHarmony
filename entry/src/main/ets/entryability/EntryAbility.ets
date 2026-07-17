@@ -1,6 +1,6 @@
 import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { window } from '@kit.ArkUI';
+import { window, KeyboardAvoidMode } from '@kit.ArkUI';
 import { initTdKit } from '../tdkit/Globals';
 import { initSettings } from '../store/AppSettings';
 
@@ -12,7 +12,27 @@ export default class EntryAbility extends UIAbility {
     // mode (which subsumes the old unconditional COLOR_MODE_NOT_SET).
     initSettings(this.context);
     initTdKit(this.context.filesDir);
+    // Cold start via a tg:// deep link — stash it; Index routes it once auth
+    // reaches Ready (the UI/router aren't up yet here).
+    this.stashDeepLink(want);
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onCreate');
+  }
+
+  // Warm start: the app is already running (foreground or background) when a
+  // tg:// link arrives. Index's @Watch picks up the new value and routes it.
+  onNewWant(want: Want, _launchParam: AbilityConstant.LaunchParam): void {
+    this.stashDeepLink(want);
+  }
+
+  // Publish the launch URI for the UI layer. Cleared to '' first so re-opening
+  // the SAME link still registers as a change and re-triggers routing.
+  private stashDeepLink(want: Want): void {
+    const uri = want.uri ?? '';
+    if (uri === '') {
+      return;
+    }
+    AppStorage.setOrCreate('pendingDeepLink', '');
+    AppStorage.setOrCreate('pendingDeepLink', uri);
   }
 
   onDestroy(): void {
@@ -55,6 +75,14 @@ export default class EntryAbility extends UIAbility {
       if (err.code) {
         hilog.error(DOMAIN, 'testTag', 'Failed to load the content. Cause: %{public}s', JSON.stringify(err));
         return;
+      }
+      // IME avoidance: RESIZE shrinks the page above the keyboard, so fixed
+      // headers (chat title bar) stay put and only the scrolling content and
+      // input bar move. The default OFFSET translates the WHOLE page up.
+      try {
+        windowStage.getMainWindowSync().getUIContext().setKeyboardAvoidMode(KeyboardAvoidMode.RESIZE);
+      } catch (e) {
+        hilog.error(DOMAIN, 'testTag', 'setKeyboardAvoidMode failed: %{public}s', JSON.stringify(e));
       }
       hilog.info(DOMAIN, 'testTag', 'Succeeded in loading the content.');
     });

@@ -12,7 +12,7 @@ export interface RichRun {
 // A block of a message: inline styled text, a pre/code block, or a blockquote.
 export interface RichSegment {
   kind: string;    // 'text' | 'pre' | 'quote'
-  runs: RichRun[]; // for kind === 'text'
+  runs: RichRun[]; // for kind === 'text' | 'quote' (quotes keep their inline links)
   text: string;    // raw text for kind === 'pre' | 'quote'
 }
 
@@ -176,7 +176,9 @@ export function parseFormattedText(text: string, entities: TdObject[]): RichSegm
     }
     const kind = (b.type === 'textEntityTypeBlockQuote' || b.type === 'textEntityTypeExpandableBlockQuote')
       ? 'quote' : 'pre';
-    segments.push({ kind, runs: [], text: text.substring(bStart, bEnd) });
+    // Quotes keep their inline runs so links/mentions inside stay tappable.
+    const quoteRuns = kind === 'quote' ? buildRuns(text, bStart, bEnd, ents) : [];
+    segments.push({ kind, runs: quoteRuns, text: text.substring(bStart, bEnd) });
     cursor = bEnd;
   }
   if (cursor < n) {

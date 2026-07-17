@@ -45,6 +45,17 @@ function formatMs(ms: number): string {
   return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
 }
 
+// Download throughput label (bytes/sec → "1.2 MB/s" / "340 KB/s").
+function formatSpeed(bytesPerSec: number): string {
+  if (bytesPerSec >= 1024 * 1024) {
+    return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`;
+  }
+  if (bytesPerSec >= 1024) {
+    return `${Math.round(bytesPerSec / 1024)} KB/s`;
+  }
+  return `${Math.round(bytesPerSec)} B/s`;
+}
+
 @Component
 export struct StreamingVideoPlayer {
   @Prop fileId: number;
@@ -67,6 +78,11 @@ export struct StreamingVideoPlayer {
   private readonly playerInstanceId: number = nextPlayerInstanceId++;
   @State status: string = '正在缓冲...';
   @State bufferedPercent: number = 0;
+  // Live download throughput (bytes/sec) shown in the control bar; 0 hides it
+  // (fully downloaded or stalled). Sampled from the buffered-byte deltas.
+  @State downloadSpeed: number = 0;
+  private lastBufferedBytes: number = 0;
+  private lastSpeedSampleMs: number = 0;
   @State isPlaying: boolean = false;
   @State currentTimeMs: number = 0;
   @State durationMs: number = 0;
@@ -158,6 +174,23 @@ export struct StreamingVideoPlayer {
     this.session = session;
     this.progressUnsub = session.subscribeProgress((buffered: number, total: number): void => {
       this.bufferedPercent = total > 0 ? Math.min(100, Math.floor((buffered / total) * 100)) : 0;
+      // Throughput from the buffered-byte delta between samples (>=400ms apart
+      // to smooth out bursty TDLib updates). Fully-downloaded → 0 (hidden).
+      const now = Date.now();
+      if (total > 0 && buffered >= total) {
+        this.downloadSpeed = 0;
+      } else if (this.lastSpeedSampleMs === 0) {
+        this.lastSpeedSampleMs = now;
+        this.lastBufferedBytes = buffered;
+      } else {
+        const dtMs = now - this.lastSpeedSampleMs;
+        if (dtMs >= 400) {
+          const dBytes = buffered - this.lastBufferedBytes;
+          this.downloadSpeed = dBytes > 0 ? (dBytes / dtMs) * 1000 : 0;
+          this.lastSpeedSampleMs = now;
+          this.lastBufferedBytes = buffered;
+        }
+      }
     });
     session.start();
     try {
@@ -320,6 +353,12 @@ export struct StreamingVideoPlayer {
       this.updateVideoAspect(this.player.getVideoWidth(), this.player.getVideoHeight(),
         this.player.getVideoSarNum(), this.player.getVideoSarDen());
       this.isPlaying = this.player.isPlaying();
+      // No buffered-byte update for a while → the download stalled or finished;
+      // drop the speed readout instead of leaving a stale value on screen.
+      if (this.downloadSpeed > 0 && this.lastSpeedSampleMs > 0
+        && Date.now() - this.lastSpeedSampleMs > 1200) {
+        this.downloadSpeed = 0;
+      }
     }, 350);
   }
 
@@ -452,7 +491,18 @@ export struct StreamingVideoPlayer {
             .onClick(() => { this.onBackgroundTap(); });
           Column({ space: 10 }) {
             Row() {
-              Blank().layoutWeight(1);
+              // Live download speed on the left (mirrors the play control on the
+              // right), so the centered play button stays centered.
+              Row({ space: 3 }) {
+                if (this.downloadSpeed > 0) {
+                  SymbolGlyph($r('sys.symbol.arrow_down')).fontSize(12).fontColor([CONTROL_TEXT_SOFT]);
+                  Text(formatSpeed(this.downloadSpeed))
+                    .fontSize(11).fontColor(CONTROL_TEXT_SOFT).fontWeight(FontWeight.Medium);
+                }
+              }
+              .layoutWeight(1)
+              .justifyContent(FlexAlign.Start)
+              .alignItems(VerticalAlign.Center);
               this.playControl();
               Row({ space: 8 }) {
                 this.ghostButton('↻', 30, () => { this.replay(); });

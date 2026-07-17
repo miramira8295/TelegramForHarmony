@@ -1,5 +1,6 @@
 import { TdObject } from '../tdkit/TdTypes';
 import { UserStore } from './UserStore';
+import { buttonStyleOf } from './ReplyKeyboard';
 import { formatMsgContent, MsgContent } from '../util/formatMsgContent';
 import { SERVICE_LABELS } from '../util/formatPreview';
 
@@ -73,6 +74,7 @@ export interface InlineBtn {
   text: string;
   url: string;
   callbackData: string; // base64 payload for inlineKeyboardButtonTypeCallback
+  style: string;        // 'primary' | 'success' | 'danger' | '' (default look)
 }
 
 // Parse message.reply_markup (replyMarkupInlineKeyboard) into button rows.
@@ -90,7 +92,8 @@ export function parseInlineKeyboard(replyMarkup: TdObject | undefined): InlineBt
       btns.push({
         text: (b['text'] as string | undefined) ?? '',
         url: tt === 'inlineKeyboardButtonTypeUrl' ? ((t!['url'] as string | undefined) ?? '') : '',
-        callbackData: tt === 'inlineKeyboardButtonTypeCallback' ? ((t!['data'] as string | undefined) ?? '') : ''
+        callbackData: tt === 'inlineKeyboardButtonTypeCallback' ? ((t!['data'] as string | undefined) ?? '') : '',
+        style: buttonStyleOf(b)
       });
     }
     if (btns.length > 0) {

@@ -2,7 +2,7 @@ import { router, promptAction } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { getTdClient } from '../tdkit/Globals';
 import { TdObject, TdRequest, TdError } from '../tdkit/TdTypes';
-import { normalizeTelegramLink, bareUsernameOf, inviteLinkOf } from './linkNav';
+import { normalizeTelegramLink, bareUsernameOf, inviteLinkOf, chatLinkActionOf, ChatLinkAction } from './linkNav';
 import { openUrl } from './openUrl';
 import { COLOR_PRIMARY } from './theme';
 
@@ -11,9 +11,21 @@ function openChatPage(chatId: number): void {
   router.pushUrl({ url: 'pages/chat/ChatPage', params: params });
 }
 
+// A link that couldn't be resolved in-app. For a tapped in-message link we hand
+// off to the system browser; for a deep-link ENTRY point we must not — opening
+// the browser there bounces browser → app → browser, so just tell the user.
+function onLinkUnresolved(context: common.UIAbilityContext, url: string, allowBrowser: boolean): void {
+  if (allowBrowser) {
+    openUrl(context, url);
+  } else {
+    promptAction.showToast({ message: '无法打开该链接', duration: 1500 });
+  }
+}
+
 // Private invite link (t.me/+hash): preview the chat via checkChatInviteLink;
 // already a member → straight into the chat, otherwise confirm and join.
-export function openInviteLink(context: common.UIAbilityContext, invite: string, original: string): void {
+export function openInviteLink(context: common.UIAbilityContext, invite: string, original: string,
+    allowBrowser: boolean = true): void {
   const req: TdRequest = { '@type': 'checkChatInviteLink' };
   req['invite_link'] = invite;
   getTdClient().send(req).then((info: TdObject) => {
@@ -51,7 +63,46 @@ export function openInviteLink(context: common.UIAbilityContext, invite: string,
     // Expired/invalid invite — or a link TDLib can't preview; let the
     // browser show Telegram's own page rather than failing silently.
     console.error(`openInviteLink.check failed: ${e.message}`);
-    openUrl(context, original);
+    onLinkUnresolved(context, original, allowBrowser);
+  });
+}
+
+// Chat link carrying an action payload: resolve the username, enter the chat,
+// then auto-send /start (bot ?start= links) or prefill the draft (?text=).
+export function openChatLinkAction(context: common.UIAbilityContext, action: ChatLinkAction,
+    original: string, allowBrowser: boolean): void {
+  const req: TdRequest = { '@type': 'searchPublicChat' };
+  req['username'] = action.username;
+  getTdClient().send(req).then((chat: TdObject) => {
+    const chatId = (chat['id'] as number | undefined) ?? 0;
+    if (chatId === 0) {
+      onLinkUnresolved(context, original, allowBrowser);
+      return;
+    }
+    const params: Record<string, Object> = { 'chatId': chatId };
+    if (action.draftText !== '') {
+      params['draftText'] = action.draftText;
+    }
+    router.pushUrl({ url: 'pages/chat/ChatPage', params: params });
+    if (action.startParam === '') {
+      return;
+    }
+    const type = chat['type'] as TdObject | undefined;
+    const uid = type !== undefined ? ((type['user_id'] as number | undefined) ?? 0) : 0;
+    if (uid <= 0) {
+      return; // ?start= is only meaningful on a private bot chat
+    }
+    const start: TdRequest = { '@type': 'sendBotStartMessage' };
+    start['bot_user_id'] = uid;
+    start['chat_id'] = chatId;
+    start['parameter'] = action.startParam;
+    getTdClient().send(start).catch((e: TdError) => {
+      console.error(`openTelegramLink.sendBotStartMessage failed: ${e.message}`);
+      promptAction.showToast({ message: '发送 /start 失败', duration: 1500 });
+    });
+  }).catch((e: TdError) => {
+    console.error(`openTelegramLink.searchPublicChat(${action.username}) failed: ${e.message}`);
+    onLinkUnresolved(context, original, allowBrowser);
   });
 }
 
@@ -59,7 +110,8 @@ export function openInviteLink(context: common.UIAbilityContext, invite: string,
 // channel descriptions, ...): text mentions open the profile card, usernames
 // resolve to a profile/chat, message links open the chat at the message, and
 // everything else goes to the system browser.
-export function openTelegramLink(context: common.UIAbilityContext, url: string): void {
+export function openTelegramLink(context: common.UIAbilityContext, url: string,
+    allowBrowser: boolean = true): void {
   if (url === '') {
     return;
   }
@@ -73,7 +125,14 @@ export function openTelegramLink(context: common.UIAbilityContext, url: string):
   }
   const invite = inviteLinkOf(url);
   if (invite !== '') {
-    openInviteLink(context, invite, url);
+    openInviteLink(context, invite, url, allowBrowser);
+    return;
+  }
+  // ?start= / ?text= actions take priority over plain username routing —
+  // bareUsernameOf drops the query string, which would lose the payload.
+  const action = chatLinkActionOf(url);
+  if (action !== null) {
+    openChatLinkAction(context, action, url, allowBrowser);
     return;
   }
   const bareName = bareUsernameOf(url);
@@ -97,16 +156,16 @@ export function openTelegramLink(context: common.UIAbilityContext, url: string):
         router.pushUrl({ url: 'pages/chat/ChatPage', params: params });
         return;
       }
-      openUrl(context, url);
+      onLinkUnresolved(context, url, allowBrowser);
     }).catch((e: TdError) => {
       console.error(`openTelegramLink.searchPublicChat(${bareName}) failed: ${e.message}`);
-      openUrl(context, url);
+      onLinkUnresolved(context, url, allowBrowser);
     });
     return;
   }
   const tgUrl = normalizeTelegramLink(url);
   if (tgUrl === '') {
-    openUrl(context, url);
+    onLinkUnresolved(context, url, allowBrowser);
     return;
   }
   const req: TdRequest = { '@type': 'getMessageLinkInfo' };
@@ -114,7 +173,7 @@ export function openTelegramLink(context: common.UIAbilityContext, url: string):
   getTdClient().send(req).then((info: TdObject) => {
     const chatId = (info['chat_id'] as number | undefined) ?? 0;
     if (chatId === 0) {
-      openUrl(context, url);
+      onLinkUnresolved(context, url, allowBrowser);
       return;
     }
     const msg = info['message'] as TdObject | undefined;
@@ -126,6 +185,6 @@ export function openTelegramLink(context: common.UIAbilityContext, url: string):
     router.pushUrl({ url: 'pages/chat/ChatPage', params: params });
   }).catch((e: TdError) => {
     console.error(`openTelegramLink.getMessageLinkInfo failed: ${e.message}`);
-    openUrl(context, url);
+    onLinkUnresolved(context, url, allowBrowser);
   });
 }

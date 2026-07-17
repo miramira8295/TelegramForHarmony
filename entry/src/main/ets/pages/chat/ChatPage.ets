@@ -17,6 +17,7 @@ import { saveMediaToGallery, saveFileToLocal } from '../../util/mediaSaver';
 import { getTdClient, getUserStore, getChatStore } from '../../tdkit/Globals';
 import { MessageStore } from '../../store/MessageStore';
 import { MessageEntry } from '../../store/MessageEntry';
+import { ReplyKeyboard, KeyboardBtn, KB_TEXT } from '../../store/ReplyKeyboard';
 import { ChatEntry } from '../../store/ChatEntry';
 import { MessageBubble } from './MessageBubble';
 import { StreamingVideoPlayer } from './StreamingVideoPlayer';
@@ -24,9 +25,9 @@ import { AlbumGroupDataSource } from './AlbumGroupDataSource';
 import { collapseAlbums, groupIndexOf, AlbumGroup } from '../../util/collapseAlbums';
 import { AvatarView } from '../chatlist/AvatarView';
 import { KEY_SEND_BY_ENTER } from '../../store/AppSettings';
-import { COLOR_PRIMARY, COLOR_TEXT_PRIMARY, COLOR_TEXT_SECONDARY } from '../../util/theme';
-import { normalizeTelegramLink, bareUsernameOf, inviteLinkOf } from '../../util/linkNav';
-import { openInviteLink } from '../../util/openTelegramLink';
+import { COLOR_PRIMARY, COLOR_TEXT_PRIMARY, COLOR_TEXT_SECONDARY, botButtonBg } from '../../util/theme';
+import { normalizeTelegramLink, bareUsernameOf, inviteLinkOf, chatLinkActionOf } from '../../util/linkNav';
+import { openInviteLink, openChatLinkAction } from '../../util/openTelegramLink';
 import { openUrl } from '../../util/openUrl';
 import { TdObject, TdRequest, TdError } from '../../tdkit/TdTypes';
 import { searchMentions, loadBotCommands, MentionItem, CommandItem } from '../../store/InputSuggestions';
@@ -38,6 +39,15 @@ const JUMP_RELOAD_THRESHOLD: number = 40;
 // Grace period before an entered-from-global-search chat runs its in-chat search.
 const SEARCH_ENTRY_DELAY_MS: number = 400;
 const VIEWER_CHROME_BG: string = '#6e3e3e40';
+const VIEWER_MIN_SCALE: number = 1;
+const VIEWER_MAX_SCALE: number = 4;
+const VIEWER_DOUBLE_TAP_SCALE: number = 2.5;
+
+// Contain-fitted display size (vp) of the fullscreen photo at 1x.
+interface ViewerFit {
+  w: number;
+  h: number;
+}
 // Emoji offered in the full reaction picker (opened from the long-press menu's
 // chevron). Ordered roughly like the official client's reaction sheet.
 const REACTION_EMOJIS: string[] = [
@@ -77,6 +87,32 @@ struct ChatPage {
   @State viewerMsgId: number = 0;
   @State chromeVisible: boolean = true;
   @State viewerInitIdx: number = 0; // Swiper's initial page when the viewer opens
+  // Fullscreen-photo zoom is viewer-owned. Keeping it separate from the
+  // message thumbnail prevents the preview gesture/transition from mutating a
+  // recycled Image node in the chat list.
+  //
+  // Model (per the official picture-preview best practice): the Image scales
+  // around its own center and pans via translate, so screen = offset + scale
+  // * content-point (measured from the image center). Pinch anchoring and
+  // boundary clamping are both computed against that model.
+  @State viewerPhotoScale: number = VIEWER_MIN_SCALE;
+  @State viewerPhotoOffsetX: number = 0;
+  @State viewerPhotoOffsetY: number = 0;
+  private viewerPinchStartScale: number = VIEWER_MIN_SCALE;
+  private viewerPinchStartOffsetX: number = 0;
+  private viewerPinchStartOffsetY: number = 0;
+  // Pinch anchor relative to the viewer center (vp) — the content point that
+  // was under the fingers at pinch start stays under them while zooming.
+  private viewerPinchAnchorX: number = 0;
+  private viewerPinchAnchorY: number = 0;
+  private viewerPanStartOffsetX: number = 0;
+  private viewerPanStartOffsetY: number = 0;
+  // Viewer viewport size in vp, captured via onAreaChange on the Swiper.
+  private viewerAreaW: number = 0;
+  private viewerAreaH: number = 0;
+  // Some devices synthesize a click when the last finger of a pinch lifts.
+  // Ignore that click briefly so a completed zoom is not immediately reset.
+  private viewerIgnoreTapUntilMs: number = 0;
   private viewerSwiperCtrl: SwiperController = new SwiperController();
   @State swipeDir: number = 1; // 1 = advancing forward (next), -1 = going back — drives the slide direction
   // Window coordinates (vp) of the tap that opened the viewer — anchor for its
@@ -98,6 +134,10 @@ struct ChatPage {
   @State isMuted: boolean = false;
   @State unreadBadge: number = 0;
   private firstUnreadId: number = 0;
+  // Set once the initial scroll parks on the unread boundary; suppresses every
+  // auto-scroll-to-bottom until the user first touches the list, so a short
+  // unread run isn't glued past the divider by async in-place content growth.
+  private stayAtUnread: boolean = false;
   private curStartIdx: number = -1; // topmost visible row index (from onScrollIndex)
   private pendingScrollBottom: boolean = false; // snap to the end once jumpToLatest's page arrives
   // @State: the segment indicator renders from this — a plain field wouldn't
@@ -142,6 +182,12 @@ struct ChatPage {
   private botProbed: boolean = false;
   // Emoji panel above the input bar.
   @State showEmojiPanel: boolean = false;
+  // Bot custom reply keyboard (null = this chat has none). Always docked when
+  // present — no toggle, so there's no state to track beyond the keyboard itself.
+  @State replyKeyboard: ReplyKeyboard | null = null;
+  // Bot keyboard collapsed by the input-bar toggle (or a one_time keyboard
+  // after use). A NEW keyboard from the bot un-collapses automatically.
+  @State replyKbCollapsed: boolean = false;
   // Voice recording state.
   @State isRecording: boolean = false;
   @State recordSeconds: number = 0;
@@ -171,6 +217,7 @@ struct ChatPage {
   private unsubPinned: (() => void) | null = null;
   private unsubHeaderAvatar: (() => void) | null = null;
   private unsubHeaderTitle: (() => void) | null = null;
+  private unsubReplyKb: (() => void) | null = null;
 
   aboutToAppear(): void {
     this.nowSec = Math.floor(Date.now() / 1000);
@@ -182,6 +229,11 @@ struct ChatPage {
     // same query (the search header, the hit list and ∧/∨ navigation). With a
     // message hit, that message is the jump target and becomes the current hit
     // — searchAnchorId keeps the search from jumping somewhere else.
+    // Deep links like t.me/<name>?text=… open the chat with a prefilled draft.
+    const incomingDraft = params !== undefined ? ((params['draftText'] as string | undefined) ?? '') : '';
+    if (incomingDraft !== '') {
+      this.draft = incomingDraft;
+    }
     const incomingQuery = params !== undefined ? ((params['searchQuery'] as string | undefined) ?? '') : '';
     if (incomingQuery !== '') {
       this.searchMode = true;
@@ -250,6 +302,14 @@ struct ChatPage {
           // view to the tail (chain-loading every newer page) before the
           // first scroll event corrects it.
           this.atBottom = false;
+          // With only a few unread, ScrollAlign.START can't lift the boundary to
+          // the top (too little content below), so it lands near the bottom and
+          // the last group becomes visible — onScrollIndex then flips atBottom
+          // back to true, and the very next in-place notify (thumbnails/reply
+          // quotes filling in) would glue us to the tail, skipping past the
+          // unread divider. Latch here so no auto-scroll overrides the boundary
+          // until the user actually touches the list.
+          this.stayAtUnread = true;
           this.scroller.scrollToIndex(gidx, false, ScrollAlign.START);
         } else {
           this.scroller.scrollEdge(Edge.Bottom);
@@ -268,18 +328,20 @@ struct ChatPage {
           }
         }, 1500);
         this.lastMaxId = maxId;
-        if (this.atBottom) {
+        // Never follow while parked at the unread boundary (until the user
+        // touches) or while the fullscreen viewer is open — the chat should
+        // return to the same underlying message after the preview closes.
+        if (this.atBottom && !this.stayAtUnread && this.viewerMsgId === 0) {
           this.scroller.scrollEdge(Edge.Bottom);
         }
-      } else if (this.didInitialScroll && this.atBottom && this.viewerMsgId === 0
+      } else if (this.didInitialScroll && this.atBottom && !this.stayAtUnread && this.viewerMsgId === 0
         && (this.store === null || !this.store.getHasMoreNewer())) {
         // In-place content growth (thumbnails, reply quotes, forward headers
         // filling in async) changes row heights; when the user is at the
         // bottom, stay glued there instead of letting the tail drift. Never
         // glue while unloaded newer pages exist — being at the window's edge
         // there is NOT the live tail, and gluing chain-loads every page.
-        // Also never glue while the media viewer is open: hiding its thumbnail
-        // collapses that row, which can fake an at-bottom state.
+        // Also never move the underlying list while the media viewer is open.
         this.scroller.scrollEdge(Edge.Bottom);
       }
       // jumpToLatest's newest page arrived — snap to the end. The dataset was
@@ -351,6 +413,14 @@ struct ChatPage {
         getChatStore().setAvatarPath(this.chatId, p);
       }
     });
+    this.unsubReplyKb = store.subscribeReplyKeyboard((kb: ReplyKeyboard | null) => {
+      const prevId = this.replyKeyboard !== null ? this.replyKeyboard.messageId : 0;
+      const newId = kb !== null ? kb.messageId : 0;
+      if (newId !== prevId) {
+        this.replyKbCollapsed = false; // a freshly sent keyboard presents itself
+      }
+      this.replyKeyboard = kb;
+    });
     this.unsubPinned = store.subscribePinned((s: string) => {
       this.pinnedPreview = s;
       this.pinnedCount = this.store !== null ? this.store.getPinnedIds().length : 0;
@@ -390,12 +460,26 @@ struct ChatPage {
     if (this.unsubPinned !== null) { this.unsubPinned(); this.unsubPinned = null; }
     if (this.unsubHeaderAvatar !== null) { this.unsubHeaderAvatar(); this.unsubHeaderAvatar = null; }
     if (this.unsubHeaderTitle !== null) { this.unsubHeaderTitle(); this.unsubHeaderTitle = null; }
+    if (this.unsubReplyKb !== null) { this.unsubReplyKb(); this.unsubReplyKb = null; }
     if (this.store !== null) { this.store.close(); this.store = null; }
   }
 
-  // Open/close wrapped in animateTo so the geometryTransition pairing (viewer
-  // ↔ tapped thumbnail) animates as a hero expand/shrink.
+  // True-bottom detection off the scroller's end edge, not the visible index
+  // range: a single tall last message can be scrolled within without changing
+  // any index, so an index-based check leaves atBottom stuck true and the glue
+  // keeps snapping back down. Frozen while the media viewer is open so the
+  // underlying chat position is stable when the preview closes.
+  private refreshAtBottom(): void {
+    if (this.viewerMsgId === 0) {
+      this.atBottom = this.scroller.isAtEnd();
+    }
+  }
+
+  // Open/close wrapped in animateTo so the viewer's own transition remains
+  // smooth without moving/re-parenting the chat thumbnail Image node.
   private openViewer(messageId: number): void {
+    this.viewerIgnoreTapUntilMs = 0;
+    this.resetViewerPhotoZoom(false);
     animateTo({ duration: 300, curve: Curve.Friction }, () => {
       this.onMediaTap(messageId);
     });
@@ -403,6 +487,11 @@ struct ChatPage {
 
   private closeViewer(): void {
     animateTo({ duration: 300, curve: Curve.Friction }, () => {
+      this.viewerPhotoScale = VIEWER_MIN_SCALE;
+      this.viewerPhotoOffsetX = 0;
+      this.viewerPhotoOffsetY = 0;
+      this.viewerPinchStartScale = VIEWER_MIN_SCALE;
+      this.viewerIgnoreTapUntilMs = 0;
       this.viewerMsgId = 0;
     });
   }
@@ -625,6 +714,14 @@ struct ChatPage {
     const invite = inviteLinkOf(url);
     if (invite !== '') {
       openInviteLink(getContext(this) as common.UIAbilityContext, invite, url);
+      return;
+    }
+    // t.me/<bot>?start=… auto-sends /start after entering the chat;
+    // t.me/<name>?text=… enters the chat with a prefilled draft. Must run
+    // before bareUsernameOf, which drops the query payload.
+    const linkAction = chatLinkActionOf(url);
+    if (linkAction !== null) {
+      openChatLinkAction(getContext(this) as common.UIAbilityContext, linkAction, url, true);
       return;
     }
     // '@name' / t.me/<name> with no message id: resolve the username — a user
@@ -959,6 +1056,136 @@ struct ChatPage {
     this.chromeVisible = !this.chromeVisible;
   }
 
+  private viewerZoomed(): boolean {
+    return this.viewerPhotoScale > VIEWER_MIN_SCALE + 0.01;
+  }
+
+  // Contain-fitted display size of the current photo at 1x, in vp. Falls back
+  // to the viewport itself when the photo's pixel size is unknown.
+  private viewerFittedSize(): ViewerFit {
+    const w = this.viewerAreaW;
+    const h = this.viewerAreaH;
+    const e = this.viewerEntry();
+    const pw = e !== null ? e.photoWidth : 0;
+    const ph = e !== null ? e.photoHeight : 0;
+    if (w <= 0 || h <= 0 || pw <= 0 || ph <= 0) {
+      return { w: w, h: h };
+    }
+    const fit = Math.min(w / pw, h / ph);
+    return { w: pw * fit, h: ph * fit };
+  }
+
+  // Boundary restriction (per the official best practice): an axis whose
+  // scaled size still fits the viewport stays centered; otherwise the photo
+  // edge stops at the viewport edge — no black gaps, never dragged off-screen.
+  private clampViewerOffset(): void {
+    const s = this.viewerPhotoScale;
+    const fitted = this.viewerFittedSize();
+    const maxX = Math.max(0, (fitted.w * s - this.viewerAreaW) / 2);
+    const maxY = Math.max(0, (fitted.h * s - this.viewerAreaH) / 2);
+    this.viewerPhotoOffsetX = Math.min(maxX, Math.max(-maxX, this.viewerPhotoOffsetX));
+    this.viewerPhotoOffsetY = Math.min(maxY, Math.max(-maxY, this.viewerPhotoOffsetY));
+  }
+
+  private resetViewerPhotoZoom(animated: boolean): void {
+    this.viewerPinchStartScale = VIEWER_MIN_SCALE;
+    if (animated) {
+      animateTo({ duration: 180, curve: Curve.EaseOut }, () => {
+        this.viewerPhotoScale = VIEWER_MIN_SCALE;
+        this.viewerPhotoOffsetX = 0;
+        this.viewerPhotoOffsetY = 0;
+      });
+    } else {
+      this.viewerPhotoScale = VIEWER_MIN_SCALE;
+      this.viewerPhotoOffsetX = 0;
+      this.viewerPhotoOffsetY = 0;
+    }
+  }
+
+  private onViewerPinchStart(event: GestureEvent): void {
+    this.viewerPinchStartScale = this.viewerPhotoScale;
+    this.viewerPinchStartOffsetX = this.viewerPhotoOffsetX;
+    this.viewerPinchStartOffsetY = this.viewerPhotoOffsetY;
+    this.viewerPinchAnchorX = event.pinchCenterX - this.viewerAreaW / 2;
+    this.viewerPinchAnchorY = event.pinchCenterY - this.viewerAreaH / 2;
+    this.viewerIgnoreTapUntilMs = Number.MAX_VALUE;
+  }
+
+  // Keep the content point that was under the initial pinch center glued to
+  // the CURRENT pinch center: zooming follows the fingers and moving both
+  // fingers together doubles as a two-finger pan.
+  private onViewerPinchUpdate(event: GestureEvent): void {
+    const s0 = this.viewerPinchStartScale;
+    const next = Math.max(VIEWER_MIN_SCALE, Math.min(VIEWER_MAX_SCALE, s0 * event.scale));
+    const ratio = next / s0;
+    const px = event.pinchCenterX - this.viewerAreaW / 2;
+    const py = event.pinchCenterY - this.viewerAreaH / 2;
+    this.viewerPhotoScale = next;
+    this.viewerPhotoOffsetX = px - (this.viewerPinchAnchorX - this.viewerPinchStartOffsetX) * ratio;
+    this.viewerPhotoOffsetY = py - (this.viewerPinchAnchorY - this.viewerPinchStartOffsetY) * ratio;
+    this.clampViewerOffset();
+  }
+
+  private onViewerPinchEnd(): void {
+    this.viewerIgnoreTapUntilMs = Date.now() + 200;
+    if (!this.viewerZoomed()) {
+      this.resetViewerPhotoZoom(false);
+    } else {
+      this.viewerPinchStartScale = this.viewerPhotoScale;
+    }
+  }
+
+  private onViewerPanStart(): void {
+    this.viewerPanStartOffsetX = this.viewerPhotoOffsetX;
+    this.viewerPanStartOffsetY = this.viewerPhotoOffsetY;
+  }
+
+  // One-finger drag pans the zoomed photo; clamping keeps it on-screen. At
+  // the fitted 1x size this is a no-op and the Swiper keeps paging instead.
+  private onViewerPanUpdate(event: GestureEvent): void {
+    if (!this.viewerZoomed()) {
+      return;
+    }
+    this.viewerPhotoOffsetX = this.viewerPanStartOffsetX + event.offsetX;
+    this.viewerPhotoOffsetY = this.viewerPanStartOffsetY + event.offsetY;
+    this.clampViewerOffset();
+  }
+
+  // First tap after zooming restores the fitted image; a tap while already at
+  // the fitted scale closes the viewer and returns to the chat.
+  private onViewerPhotoTap(): void {
+    if (Date.now() < this.viewerIgnoreTapUntilMs) {
+      return;
+    }
+    if (this.viewerZoomed()) {
+      this.resetViewerPhotoZoom(true);
+      return;
+    }
+    this.closeViewer();
+  }
+
+  // Double tap zooms around the actual touch point instead of the center of the
+  // screen. A second double tap is a quick way back to the fitted 1x image.
+  private onViewerPhotoDoubleTap(event: GestureEvent): void {
+    if (this.viewerZoomed()) {
+      this.resetViewerPhotoZoom(true);
+      return;
+    }
+    let px = 0;
+    let py = 0;
+    if (event.fingerList.length > 0) {
+      px = event.fingerList[0].localX - this.viewerAreaW / 2;
+      py = event.fingerList[0].localY - this.viewerAreaH / 2;
+    }
+    this.viewerPinchStartScale = VIEWER_DOUBLE_TAP_SCALE;
+    animateTo({ duration: 200, curve: Curve.EaseOut }, () => {
+      this.viewerPhotoScale = VIEWER_DOUBLE_TAP_SCALE;
+      this.viewerPhotoOffsetX = px * (1 - VIEWER_DOUBLE_TAP_SCALE);
+      this.viewerPhotoOffsetY = py * (1 - VIEWER_DOUBLE_TAP_SCALE);
+      this.clampViewerOffset();
+    });
+  }
+
   private viewerEntry(): MessageEntry | null {
     const idx = this.messages.findIndex((m: MessageEntry) => m.id === this.viewerMsgId);
     return idx >= 0 ? this.messages[idx] : null;
@@ -1048,6 +1275,7 @@ struct ChatPage {
     if (id === this.viewerMsgId) {
       return;
     }
+    this.resetViewerPhotoZoom(false);
     this.viewerMsgId = id;
     if (this.store !== null && !this.viewerSiblingIsVideo(id)) {
       this.store.requestFullPhoto(id);
@@ -1152,11 +1380,51 @@ struct ChatPage {
               }.width(56).height(56);
             }
           } else {
-            if (this.photoSrcFor(id) !== '') {
-              Image(this.photoSrcFor(id))
-                .objectFit(ImageFit.Contain).width('100%').height('100%')
-                .onClick(() => { this.closeViewer(); });
+            // Gestures live on this UNSCALED wrapper, not on the Image: a
+            // scaled component reports gesture coordinates/offsets in its own
+            // scaled space, which made panning lag the finger by the zoom
+            // factor. The Image only carries the scale/translate transform.
+            Stack() {
+              if (this.photoSrcFor(id) !== '') {
+                Image(this.photoSrcFor(id))
+                  .objectFit(ImageFit.Contain).width('100%').height('100%')
+                  .scale({
+                    x: id === this.viewerMsgId ? this.viewerPhotoScale : VIEWER_MIN_SCALE,
+                    y: id === this.viewerMsgId ? this.viewerPhotoScale : VIEWER_MIN_SCALE
+                  })
+                  .translate({
+                    x: id === this.viewerMsgId ? this.viewerPhotoOffsetX : 0,
+                    y: id === this.viewerMsgId ? this.viewerPhotoOffsetY : 0
+                  });
+              }
             }
+            .width('100%').height('100%')
+            // Exclusive tap recognition delays the single-tap action just
+            // enough to determine whether the user is double tapping.
+            .gesture(
+              GestureGroup(GestureMode.Exclusive,
+                TapGesture({ count: 2, fingers: 1 })
+                  .onAction((event: GestureEvent) => { this.onViewerPhotoDoubleTap(event); }),
+                TapGesture({ count: 1, fingers: 1 })
+                  .onAction(() => { this.onViewerPhotoTap(); })
+              )
+            )
+            .priorityGesture(
+              GestureGroup(GestureMode.Parallel,
+                PinchGesture({ fingers: 2 })
+                  .onActionStart((event: GestureEvent) => { this.onViewerPinchStart(event); })
+                  .onActionUpdate((event: GestureEvent) => { this.onViewerPinchUpdate(event); })
+                  .onActionEnd(() => { this.onViewerPinchEnd(); })
+                  .onActionCancel(() => { this.onViewerPinchEnd(); }),
+                // Dynamic distance resolves the Swiper conflict (official
+                // best practice): a large threshold at 1x lets the Swiper's
+                // own pan win and page the album; a small one while zoomed
+                // keeps single-finger panning responsive.
+                PanGesture({ fingers: 1, distance: this.viewerZoomed() ? 3 : 50 })
+                  .onActionStart(() => { this.onViewerPanStart(); })
+                  .onActionUpdate((event: GestureEvent) => { this.onViewerPanUpdate(event); })
+              )
+            );
           }
         }.width('100%').height('100%');
       }, (id: number) => `vm_${id}`);
@@ -1164,7 +1432,14 @@ struct ChatPage {
     .indicator(false)
     .loop(false)
     .index(this.viewerInitIdx)
+    // While enlarged, one-finger movement must not page the album out from
+    // under the zoomed photo. Resetting to 1x re-enables normal paging.
+    .disableSwipe(this.viewerZoomed())
     .onChange((i: number) => { this.onViewerPageChange(i); })
+    .onAreaChange((_old: Area, area: Area) => {
+      this.viewerAreaW = Number(area.width);
+      this.viewerAreaH = Number(area.height);
+    })
     .width('100%').height('100%');
     if (!this.viewerIsVideo() && this.viewerPhotoUpgrading()) {
       // Centered progress ring, same chrome style as the top-left close button.
@@ -1466,6 +1741,9 @@ struct ChatPage {
   // the emoji panel scales out of / back into.
   private emojiBtnCx: number = 48;
   @State inputBarH: number = 60; // measured input bar height — anchors the emoji overlay
+  // Measured bot-keyboard height; with the input bar it makes up the bottom
+  // chrome the scroll-to-bottom FAB has to clear.
+  @State replyKbH: number = 0;
   // "Fake" animation: the open/close transition flies an empty white shell;
   // the real panel content (hundreds of emoji + sticker players) mounts only
   // after the animation lands, so frames stay cheap.
@@ -1662,6 +1940,29 @@ struct ChatPage {
     this.clearReply();
     this.mentionItems = [];
     this.commandItems = [];
+  }
+
+  // Bot reply-keyboard button. keyboardButtonTypeText simply sends its own label
+  // as an ordinary message. The other types (location / phone number / poll /
+  // web app) need capabilities we don't have, so they're rejected rather than
+  // silently doing nothing — a button that lies is worse than one that says no.
+  private onReplyKeyboardTap(btn: KeyboardBtn): void {
+    if (btn.type !== KB_TEXT) {
+      promptAction.showToast({ message: '暂不支持这种按钮', duration: 1500 });
+      return;
+    }
+    if (this.store === null) {
+      return;
+    }
+    this.atBottom = true; // my own message always follows to the bottom
+    this.stayAtUnread = false;
+    this.store.send(btn.text, this.replyToId);
+    this.clearReply();
+    // one_time keyboards fold away after use; the input-bar keyboard toggle
+    // brings them back at any time.
+    if (this.replyKeyboard !== null && this.replyKeyboard.oneTime) {
+      this.replyKbCollapsed = true;
+    }
   }
 
   private findMsg(messageId: number): MessageEntry | null {
@@ -2018,6 +2319,43 @@ struct ChatPage {
     .backgroundColor('#00000066');
   }
 
+  // The reply keyboard sits below the input bar, so while it's up IT carries the
+  // bottom safe-area inset instead of the input bar (see inputBar's padding).
+  private replyKbVisible(): boolean {
+    return this.replyKeyboard !== null && !this.replyKbCollapsed;
+  }
+
+  // Bot custom reply keyboard: full-width button rows under the input bar.
+  @Builder
+  replyKeyboardPanel() {
+    Column({ space: 6 }) {
+      ForEach(this.replyKeyboard!.rows, (row: KeyboardBtn[], rowIdx: number) => {
+        Row({ space: 6 }) {
+          ForEach(row, (btn: KeyboardBtn, btnIdx: number) => {
+            Row() {
+              Text(btn.text)
+                .fontSize(15)
+                .fontColor(btn.style !== '' ? Color.White : COLOR_TEXT_PRIMARY)
+                .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+                .textAlign(TextAlign.Center);
+            }
+            .layoutWeight(1)
+            .constraintSize({ minHeight: 42 })
+            .padding({ left: 8, right: 8, top: 8, bottom: 8 })
+            .backgroundColor(botButtonBg(btn.style, $r('app.color.surface')))
+            .borderRadius(8)
+            .justifyContent(FlexAlign.Center)
+            .onClick(() => { this.onReplyKeyboardTap(btn); });
+          }, (btn: KeyboardBtn, btnIdx: number) => `kb_${rowIdx}_${btnIdx}_${btn.text}`);
+        }.width('100%');
+      }, (_row: KeyboardBtn[], rowIdx: number) => `kbrow_${rowIdx}`);
+    }
+    .width('100%')
+    .padding({ left: 8, right: 8, top: 8, bottom: this.bottomInset() })
+    .backgroundColor($r('app.color.page_bg'))
+    .onAreaChange((_old: Area, area: Area) => { this.replyKbH = area.height as number; });
+  }
+
   @Builder
   inputBar() {
     Row({ space: 8 }) {
@@ -2072,6 +2410,14 @@ struct ChatPage {
             }
           })
           .onFocus(() => { this.setEmojiPanel(false); });
+        if (this.replyKeyboard !== null) {
+          // Bot-keyboard toggle: tinted while the keyboard is up, gray when
+          // collapsed — tapping flips between the two.
+          SymbolGlyph($r('sys.symbol.keyboard'))
+            .fontSize(24)
+            .fontColor([this.replyKbCollapsed ? COLOR_TEXT_SECONDARY : COLOR_PRIMARY])
+            .onClick(() => { this.replyKbCollapsed = !this.replyKbCollapsed; });
+        }
         SymbolGlyph($r('sys.symbol.paperclip')).fontSize(24).fontColor([COLOR_TEXT_SECONDARY])
           .bindMenu([
             { value: '照片或视频', action: (): void => { this.pickAndSendMedia(); } } as MenuElement,
@@ -2102,7 +2448,8 @@ struct ChatPage {
           }
         }.width(44).height(44);
       }
-    }.width('100%').padding({ left: 12, right: 12, top: 8, bottom: this.bottomInset() })
+    }.width('100%')
+    .padding({ left: 12, right: 12, top: 8, bottom: this.replyKbVisible() ? 8 : this.bottomInset() })
     .alignItems(VerticalAlign.Center)
     .onAreaChange((_old: Area, area: Area) => { this.inputBarH = area.height as number; });
   }
@@ -2247,7 +2594,6 @@ struct ChatPage {
                 albumMemberIds: g.memberIds, albumIsVideo: g.photoIsVideo,
                 albumProgress: g.photoProgress, albumCaption: g.caption,
                 albumCaptionEntities: g.captionEntities,
-                hiddenMediaId: this.viewerMsgId,
                 onMediaTap: (id: number, x: number, y: number): void => {
                   this.tapX = x;
                   this.tapY = y;
@@ -2309,6 +2655,9 @@ struct ChatPage {
         .onTouch((e: TouchEvent) => {
           if (e.type === TouchType.Down) {
             this.olderArmed = true;
+            // User took control of the scroll — release the unread-boundary
+            // latch so live messages resume following the tail normally.
+            this.stayAtUnread = false;
             // The highlight overlay is viewport-anchored — drop it as soon as
             // the user starts interacting, before it can detach from its row.
             this.cancelFlash();
@@ -2317,11 +2666,7 @@ struct ChatPage {
           }
         })
         .onScrollIndex((start: number, end: number) => {
-          // Freeze the at-bottom flag while the media viewer is open — the
-          // hidden thumbnail collapses its row, faking a near-bottom index.
-          if (this.viewerMsgId === 0) {
-            this.atBottom = end >= this.groups.length - 2;
-          }
+          this.refreshAtBottom();
           this.curStartIdx = start;
           this.updateFloatDate(start);
           this.markVisibleRead(end);
@@ -2338,7 +2683,12 @@ struct ChatPage {
           if (this.store !== null && end >= this.groups.length - 5) {
             this.store.loadNewer();
           }
-        });
+        })
+        // onScrollIndex only fires when the visible index RANGE changes, so
+        // scrolling up inside one tall last message (index unchanged) never
+        // updates atBottom. onDidScroll fires on every scroll frame — track the
+        // true bottom edge here so the glue stops fighting the user.
+        .onDidScroll(() => { this.refreshAtBottom(); });
         // Jump-target highlight overlay (gentle double blink over the row a
         // reply/pinned/link jump just landed on). Coordinates come from
         // scroller.getItemRect, which is relative to the List — hence the Stack.
@@ -2407,6 +2757,11 @@ struct ChatPage {
             this.replyPreview();
           }
           this.inputBar();
+          // In the layout flow (unlike the overlaying emoji panel) — Telegram
+          // docks the bot keyboard under the input bar rather than over the chat.
+          if (this.replyKbVisible()) {
+            this.replyKeyboardPanel();
+          }
         }
       }
       .width('100%').height('100%')
@@ -2455,7 +2810,9 @@ struct ChatPage {
         }
         .width('100%').height('100%')
         .justifyContent(FlexAlign.End)
-        .padding({ bottom: this.inputBarH })
+        // Clear the bot keyboard too — it docks BELOW the input bar, so anchoring
+        // on inputBarH alone would drop the panel on top of the input bar.
+        .padding({ bottom: this.inputBarH + (this.replyKbVisible() ? this.replyKbH : 0) })
         // None (not Transparent): the wrapper itself never hit-tests, so the
         // panel child blocks touches over its own area (Transparent leaked
         // panel taps through to the list, whose onTouch dismissed the panel),
@@ -2471,7 +2828,10 @@ struct ChatPage {
         }
         .width('100%').height('100%')
         .justifyContent(FlexAlign.End).alignItems(HorizontalAlign.End)
-        .padding({ right: 14, bottom: 72 })
+        // Track the real bottom chrome instead of a hardcoded guess: the input
+        // bar's height varies (safe-area inset, reply preview) and the bot
+        // keyboard stacks under it, both of which the FAB must clear.
+        .padding({ right: 14, bottom: this.inputBarH + (this.replyKbVisible() ? this.replyKbH : 0) + 8 })
         .hitTestBehavior(HitTestMode.Transparent);
       }
 
@@ -2530,11 +2890,14 @@ struct ChatPage {
           }
         }
         .width('100%').height('100%').backgroundColor(Color.Black)
-        // Hero transition: paired (same id) with the tapped thumbnail, which is
-        // removed while the viewer is open — the viewer expands out of the
-        // thumbnail's frame on open and shrinks back into it on close.
-        .geometryTransition(`media_${this.viewerMsgId}`, { follow: true })
-        .transition(TransitionEffect.OPACITY.animation({ duration: 300, curve: Curve.Friction }))
+        // The fullscreen surface owns its transition. The chat thumbnail stays
+        // mounted and decoded underneath, so closing can never leave that cell
+        // as a grey/background placeholder or an empty Image node.
+        .transition(
+          TransitionEffect.scale({ x: 0.25, y: 0.25, centerX: this.tapX, centerY: this.tapY })
+            .combine(TransitionEffect.OPACITY)
+            .animation({ duration: 300, curve: Curve.Friction })
+        )
       }
     }.width('100%').height('100%');
   }

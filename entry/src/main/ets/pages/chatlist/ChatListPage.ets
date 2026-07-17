@@ -254,11 +254,17 @@ export struct ChatListPage {
       Tabs({ controller: this.controller }) {
         ForEach(this.tabs(), (spec: TabSpec) => {
           TabContent() {
-            if (spec.key === 'main') {
-              MainTabBody();
-            } else {
-              ChatListView({ listKey: spec.key });
-            }
+            // TabContent centers a content-sized child, so a short chat list
+            // (few chats / a small folder) would float in the vertical middle.
+            // A definite full-height Column pins the list to the top and lets
+            // the body's layoutWeight(1) actually stretch.
+            Column() {
+              if (spec.key === 'main') {
+                MainTabBody();
+              } else {
+                ChatListView({ listKey: spec.key });
+              }
+            }.width('100%').height('100%')
           }
         }, (spec: TabSpec) => `${spec.key}_${spec.title}`);
       }
