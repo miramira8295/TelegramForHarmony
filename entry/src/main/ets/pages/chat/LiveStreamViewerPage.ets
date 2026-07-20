@@ -3,6 +3,7 @@ import { LiveStreamStore } from '../../store/LiveStreamStore';
 import { LiveStreamState, emptyLiveStreamState } from '../../tdkit/GroupCallTypes';
 import { getTdClient } from '../../tdkit/Globals';
 import { getGroupCall, leaveGroupCall } from '../../tdkit/GroupCallApi';
+import { TdObject } from '../../tdkit/TdTypes';
 import { COLOR_TEXT_PRIMARY, COLOR_TEXT_SECONDARY } from '../../util/theme';
 
 // 直播观看页(观众端)骨架 —— 计划 #1 只负责状态展示与生命周期管理;
@@ -24,7 +25,18 @@ struct LiveStreamViewerPage {
     this.store = new LiveStreamStore(client, this.groupCallId);
     this.off = this.store.subscribe((s: LiveStreamState) => { this.state = s; });
     this.state = this.store.getState();
-    getGroupCall(client, this.groupCallId).catch((e: Error) => {
+    getGroupCall(client, this.groupCallId).then((gc: TdObject) => {
+      // 仅在 store 尚未产出更新状态时用初始响应预置,避免覆盖后续 updateGroupCall
+      if (this.state.isActive) { return; }
+      this.state = {
+        isActive: (gc['is_active'] as boolean | undefined) ?? false,
+        isJoined: (gc['is_joined'] as boolean | undefined) ?? false,
+        needRejoin: (gc['need_rejoin'] as boolean | undefined) ?? false,
+        participantCount: (gc['participant_count'] as number | undefined) ?? 0,
+        streams: this.state.streams,
+        error: ''
+      };
+    }).catch((e: Error) => {
       console.error(`LiveStreamViewerPage.getGroupCall failed: ${e.message}`);
     });
   }

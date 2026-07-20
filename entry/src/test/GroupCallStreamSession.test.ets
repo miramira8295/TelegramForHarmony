@@ -88,6 +88,32 @@ export default function groupCallStreamSessionTest() {
       expect(delivered.length).assertEqual(0);
     });
 
+    it('start_twice_clears_prior_retry_timer', 0, async () => {
+      const fired: Array<() => void> = [];
+      const cleared: number[] = [];
+      const timer: TimerFns = {
+        setTimeout: (cb: () => void, _ms: number): number => { fired.push(cb); return fired.length; },
+        clearTimeout: (id: number): void => { cleared.push(id); }
+      };
+      const asked: number[] = [];
+      const fetch: SegmentFetcher = (ch: number, off: number, scale: number): Promise<Uint8Array> => {
+        asked.push(off);
+        return Promise.reject(new Error('boom'));
+      };
+      const delivered: number[] = [];
+      const sink: SegmentSink = (ch: number, off: number, bytes: Uint8Array): void => { delivered.push(off); };
+      const session = new GroupCallStreamSession(fetch, sink, timer);
+      session.start(1, 0, 20000, 2);
+      // 首次 fetch 失败,排程第 1 次重试定时器(id=1)
+      for (let i = 0; i < 5; i++) { await Promise.resolve(); }
+      expect(fired.length).assertEqual(1);
+      const priorRetryTimerId = fired.length;
+      // 未调用 stop(),直接再次 start():应清理上一次残留的重试定时器
+      session.start(1, 0, 20000, 2);
+      session.stop();
+      expect(cleared.includes(priorRetryTimerId)).assertTrue();
+    });
+
     it('no_delivery_after_stop', 0, async () => {
       let resolveFetch: ((bytes: Uint8Array) => void) | null = null;
       const asked: number[] = [];

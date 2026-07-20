@@ -27,6 +27,10 @@ export class GroupCallStreamSession {
   }
 
   start(channelId: number, scale: number, liveEdgeMs: number, backSegments: number): void {
+    if (this.retryTimerId !== -1) {
+      this.timer.clearTimeout(this.retryTimerId);
+      this.retryTimerId = -1;
+    }
     this.stopped = false;
     this.channelId = channelId;
     this.scale = scale;
