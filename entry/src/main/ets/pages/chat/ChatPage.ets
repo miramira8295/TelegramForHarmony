@@ -121,6 +121,9 @@ struct ChatPage {
   @State tapY: number = 0;
   @State pinnedPreview: string = '';
   @State pinnedCount: number = 0;
+  // 正在直播入口条:chat.video_chat.group_call_id > 0 时显示("正在直播").
+  @State liveGroupCallId: number = 0;
+  private unsubVideoChat: (() => void) | null = null;
   private chatId: number = 0;
   // >0: comment-thread view over the linked discussion group (see onCommentTap)
   private threadRootId: number = 0;
@@ -242,6 +245,13 @@ struct ChatPage {
     }
     this.refreshHeader();
     this.unsubChat = getChatStore().subscribe(() => { this.refreshHeader(); }, 'main');
+    this.refreshVideoChat();
+    this.unsubVideoChat = getTdClient().onUpdate('updateChatVideoChat', (u: TdObject) => {
+      if ((u['chat_id'] as number | undefined) === this.chatId) {
+        const vc = u['video_chat'] as TdObject | undefined;
+        this.liveGroupCallId = vc !== undefined ? ((vc['group_call_id'] as number | undefined) ?? 0) : 0;
+      }
+    });
     const store = new MessageStore(getTdClient(), getUserStore(), this.chatId, this.threadRootId);
     this.store = store;
     this.unsubMsg = store.subscribe((list: MessageEntry[]) => {
@@ -461,7 +471,30 @@ struct ChatPage {
     if (this.unsubHeaderAvatar !== null) { this.unsubHeaderAvatar(); this.unsubHeaderAvatar = null; }
     if (this.unsubHeaderTitle !== null) { this.unsubHeaderTitle(); this.unsubHeaderTitle = null; }
     if (this.unsubReplyKb !== null) { this.unsubReplyKb(); this.unsubReplyKb = null; }
+    if (this.unsubVideoChat !== null) { this.unsubVideoChat(); this.unsubVideoChat = null; }
     if (this.store !== null) { this.store.close(); this.store = null; }
+  }
+
+  // 拉取当前会话的 video_chat 字段,决定"正在直播"入口条是否显示;
+  // 后续变化由 updateChatVideoChat 增量更新(见 aboutToAppear).
+  private refreshVideoChat(): void {
+    const req: TdRequest = { '@type': 'getChat' };
+    req['chat_id'] = this.chatId;
+    getTdClient().send(req).then((chat: TdObject) => {
+      const vc = chat['video_chat'] as TdObject | undefined;
+      this.liveGroupCallId = vc !== undefined ? ((vc['group_call_id'] as number | undefined) ?? 0) : 0;
+    }).catch((e: TdError) => {
+      console.error(`ChatPage.refreshVideoChat getChat failed: ${e.message}`);
+    });
+  }
+
+  // "正在直播" 入口条点击:跳转到直播观看页,携带 groupCallId.
+  private onLiveStreamTap(): void {
+    if (this.liveGroupCallId <= 0) {
+      return;
+    }
+    const params: Record<string, Object> = { 'groupCallId': this.liveGroupCallId };
+    router.pushUrl({ url: 'pages/chat/LiveStreamViewerPage', params: params });
   }
 
   // True-bottom detection off the scroller's end edge, not the visible index
@@ -2515,6 +2548,20 @@ struct ChatPage {
     .onClick(() => { this.onPinnedTap(); });
   }
 
+  // 会话存在活跃 video chat(chat.video_chat.group_call_id > 0)时的"正在直播"入口条.
+  @Builder
+  liveStreamBanner() {
+    Row({ space: 8 }) {
+      SymbolGlyph($r('sys.symbol.play_fill')).fontSize(16).fontColor([Color.Red]);
+      Text('正在直播').fontSize(14).fontColor(COLOR_TEXT_PRIMARY).fontWeight(FontWeight.Medium)
+        .layoutWeight(1);
+      SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([COLOR_TEXT_SECONDARY]);
+    }
+    .width('100%').padding({ left: 12, right: 16, top: 8, bottom: 8 })
+    .backgroundColor($r('app.color.surface')).alignItems(VerticalAlign.Center)
+    .onClick(() => { this.onLiveStreamTap(); });
+  }
+
   @Builder
   scrollFab() {
     Column() {
@@ -2557,6 +2604,9 @@ struct ChatPage {
           this.searchHeader();
         } else {
           this.header();
+        }
+        if (this.liveGroupCallId > 0) {
+          this.liveStreamBanner();
         }
         if (this.pinnedPreview !== '') {
           this.pinnedBanner();

@@ -3,6 +3,7 @@
     "pages/Index",
     "pages/chatlist/ArchivePage",
     "pages/chat/ChatPage",
+    "pages/chat/LiveStreamViewerPage",
     "pages/profile/ProfilePage",
     "pages/profile/ChatProfilePage",
     "pages/search/GlobalSearchPage",
