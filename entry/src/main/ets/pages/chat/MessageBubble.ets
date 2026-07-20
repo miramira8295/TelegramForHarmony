@@ -70,6 +70,12 @@ export struct MessageBubble {
   // channel/chat origin, user id for a user origin.
   onForwardTap: (chatId: number, messageId: number, userId: number) => void = (): void => {};
   onOpenReactions: (messageId: number) => void = (): void => {};
+  // Chat's currently active video chat, if any (0 = none live) — lets a
+  // "started" system pill know whether it's still tappable, and supplies the
+  // id to hand off on tap. Sourced from ChatPage's existing updateChatVideoChat
+  // subscription (see liveGroupCallId there) rather than re-subscribing here.
+  @Prop liveGroupCallId: number = 0;
+  onLiveStreamTap: (groupCallId: number) => void = (): void => {};
   // Live arrival: slide the bubble in from below (never set for history rows).
   @Prop animateIn: boolean = false;
   // 聊天设置 → 消息字号 / 消息圆角, applied live.
@@ -674,7 +680,13 @@ export struct MessageBubble {
   }
 
   // Service/system messages (title/photo changes, joins, pins, ...) render as
-  // a centered pill, never as a left/right chat bubble.
+  // a centered pill, never as a left/right chat bubble. A "video chat started"
+  // pill is tappable — but only while the chat's video chat is still live —
+  // and opens the live viewer with that call's id.
+  private liveVideoChatTappable(): boolean {
+    return this.msg.isVideoChatStarted && this.liveGroupCallId > 0;
+  }
+
   @Builder
   systemPill() {
     Text(this.msg.placeholderLabel)
@@ -682,7 +694,10 @@ export struct MessageBubble {
       .textAlign(TextAlign.Center)
       .constraintSize({ maxWidth: this.screenW * 0.8 })
       .backgroundColor($r('app.color.system_pill')).borderRadius(10)
-      .padding({ left: 10, right: 10, top: 4, bottom: 4 });
+      .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+      .onClick(this.liveVideoChatTappable()
+        ? (() => { this.onLiveStreamTap(this.liveGroupCallId); })
+        : undefined);
   }
 
   build() {

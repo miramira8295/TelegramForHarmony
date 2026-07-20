@@ -92,5 +92,17 @@ export default function formatPreviewTest() {
       const m = JSON.parse('{"@type":"message","content":null}') as TdObject;
       expect(formatPreview(m)).assertEqual('');
     });
+    it('video_chat_started', 0, () => {
+      const c: TdObject = { '@type': 'messageVideoChatStarted' };
+      expect(formatPreview(msg(c))).assertEqual('发起了视频通话');
+    });
+    it('video_chat_ended', 0, () => {
+      const c: TdObject = { '@type': 'messageVideoChatEnded' };
+      expect(formatPreview(msg(c))).assertEqual('结束了视频通话');
+    });
+    it('video_chat_scheduled', 0, () => {
+      const c: TdObject = { '@type': 'messageVideoChatScheduled' };
+      expect(formatPreview(msg(c))).assertEqual('安排了视频通话');
+    });
   });
 }

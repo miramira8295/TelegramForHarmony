@@ -21,6 +21,10 @@ export interface MessageEntry {
   photoWidth: number;
   photoHeight: number;
   placeholderLabel: string;
+  // True only for a live messageVideoChatStarted service message — the bubble
+  // becomes tappable (opens the live viewer) when the chat's video chat is
+  // still active. Ended/scheduled video-chat pills stay display-only.
+  isVideoChatStarted: boolean;
   replyToMessageId: number;
   replySenderName: string;
   replyText: string;
@@ -111,7 +115,8 @@ export function cloneMessage(m: MessageEntry): MessageEntry {
     contentType: m.contentType, text: m.text, photoFileId: m.photoFileId, photoPath: m.photoPath,
     photoProgress: m.photoProgress,
     photoWidth: m.photoWidth, photoHeight: m.photoHeight,
-    placeholderLabel: m.placeholderLabel, replyToMessageId: m.replyToMessageId,
+    placeholderLabel: m.placeholderLabel, isVideoChatStarted: m.isVideoChatStarted,
+    replyToMessageId: m.replyToMessageId,
     replySenderName: m.replySenderName, replyText: m.replyText, sendState: m.sendState,
     albumId: m.albumId, textEntities: m.textEntities,
     forwardFrom: m.forwardFrom, forwardChatId: m.forwardChatId,
@@ -402,6 +407,9 @@ export function buildMessageEntry(message: TdObject, users: UserStore): MessageE
   const cmt: CommentInfo = commentInfo(message);
   const sysLabel = systemMessageLabel(message, users);
   const hidden = isHiddenContent(message);
+  const rawContent = message['content'] as TdObject | undefined;
+  const isVideoChatStarted = !hidden && rawContent !== undefined
+    && rawContent['@type'] === 'messageVideoChatStarted';
   // Log genuinely unhandled content types — not hidden, not given a description
   // (still the bare 'Message' fallback) — so missing types surface in hilog.
   if (!hidden && c.contentType === 'other' && c.placeholderLabel === 'Message') {
@@ -426,6 +434,7 @@ export function buildMessageEntry(message: TdObject, users: UserStore): MessageE
     photoWidth: c.photoWidth,
     photoHeight: c.photoHeight,
     placeholderLabel: sysLabel !== '' ? sysLabel : c.placeholderLabel,
+    isVideoChatStarted,
     replyToMessageId: replyId(message),
     replySenderName: '',
     replyText: '',

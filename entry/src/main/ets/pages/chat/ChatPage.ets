@@ -2671,6 +2671,10 @@ struct ChatPage {
                 onReportMsg: (id: number): void => { promptAction.showToast({ message: '举报功能开发中', duration: 1500 }); },
                 onSelectMsg: (id: number): void => { this.enterSelect(id); },
                 onOpenReactions: (id: number): void => { this.openReactionSheet(id); },
+                liveGroupCallId: this.liveGroupCallId,
+                // Reuses the same navigation as the "正在直播" banner (onLiveStreamTap
+                // already reads this.liveGroupCallId and no-ops if it's gone stale).
+                onLiveStreamTap: (): void => { this.onLiveStreamTap(); },
                 showAvatar: g.showAvatar,
                 showSenderName: g.showSenderName,
                 animateIn: this.freshSinceId !== 0 && g.head.id > this.freshSinceId });
