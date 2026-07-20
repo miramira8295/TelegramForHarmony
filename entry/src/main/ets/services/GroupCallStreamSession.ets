@@ -1,5 +1,5 @@
 import { TimerFns } from '../tdkit/TdClient';
-import { nextTimeOffset, segmentDurationMs, startOffset } from './StreamSegmentMath';
+import { nextTimeOffset, startOffset } from './StreamSegmentMath';
 
 export type SegmentFetcher = (channelId: number, timeOffset: number, scale: number) => Promise<Uint8Array>;
 export type SegmentSink = (channelId: number, timeOffset: number, bytes: Uint8Array) => void;
