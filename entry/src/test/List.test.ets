@@ -18,6 +18,7 @@ import messageStoreTest from './MessageStore.test';
 import linkNavTest from './LinkNav.test';
 import streamSegmentMathTest from './StreamSegmentMath.test';
 import groupCallApiTest from './GroupCallApi.test';
+import liveStreamStoreTest from './LiveStreamStore.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -40,4 +41,5 @@ export default function testsuite() {
   linkNavTest();
   streamSegmentMathTest();
   groupCallApiTest();
+  liveStreamStoreTest();
 }
