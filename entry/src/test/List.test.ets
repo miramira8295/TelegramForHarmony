@@ -16,6 +16,7 @@ import formatMsgContentTest from './FormatMsgContent.test';
 import messageEntryTest from './MessageEntry.test';
 import messageStoreTest from './MessageStore.test';
 import linkNavTest from './LinkNav.test';
+import streamSegmentMathTest from './StreamSegmentMath.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -36,4 +37,5 @@ export default function testsuite() {
   messageEntryTest();
   messageStoreTest();
   linkNavTest();
+  streamSegmentMathTest();
 }
