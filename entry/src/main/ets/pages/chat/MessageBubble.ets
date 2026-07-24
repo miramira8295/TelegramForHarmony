@@ -2,7 +2,9 @@ import { MessageEntry, ReactionInfo, InlineBtn } from '../../store/MessageEntry'
 import { TdObject } from '../../tdkit/TdTypes';
 import { AvatarView } from '../chatlist/AvatarView';
 import {
-  KEY_TEXT_SIZE, KEY_BUBBLE_RADIUS, KEY_REDUCE_ANIM, TEXT_SIZE_DEFAULT, RADIUS_DEFAULT
+  KEY_TEXT_SIZE, KEY_BUBBLE_RADIUS, KEY_REDUCE_ANIM, TEXT_SIZE_DEFAULT, RADIUS_DEFAULT,
+  KEY_POWER_ACTIVE, KEY_POWER_AUTOPLAY_GIF, KEY_POWER_AUTOPLAY_VIDEO, KEY_POWER_CHAT_EFFECTS,
+  KEY_POWER_EFFECT_MESSAGE, KEY_POWER_EFFECT_REACTION, KEY_POWER_EMOJI, KEY_POWER_EMOJI_REACTIONS
 } from '../../store/AppSettings';
 import { TgsStickerView } from './TgsStickerView';
 import { WebmStickerView } from './WebmStickerView';
@@ -58,6 +60,7 @@ export struct MessageBubble {
   onFileTap: (messageId: number) => void = (): void => {};
   onFileSave: (messageId: number) => void = (): void => {};
   onVoiceTap: (messageId: number) => void = (): void => {};
+  onAutoplayVideoNeedDownload: (messageId: number) => void = (): void => {};
   // Long-press context menu actions.
   onSetReaction: (messageId: number, emoji: string, isChosen: boolean) => void = (): void => {};
   onReplyTo: (messageId: number) => void = (): void => {};
@@ -82,8 +85,23 @@ export struct MessageBubble {
   @StorageProp(KEY_TEXT_SIZE) msgTextSize: number = TEXT_SIZE_DEFAULT;
   @StorageProp(KEY_BUBBLE_RADIUS) bubbleRadius: number = RADIUS_DEFAULT;
   @StorageProp(KEY_REDUCE_ANIM) reduceAnim: boolean = false;
+  @StorageProp(KEY_POWER_ACTIVE) powerSaving: boolean = false;
+  @StorageProp(KEY_POWER_CHAT_EFFECTS) chatEffectsEnabled: boolean = true;
+  @StorageProp(KEY_POWER_EFFECT_MESSAGE) messageEffectsEnabled: boolean = true;
+  @StorageProp(KEY_POWER_EFFECT_REACTION) reactionEffectsEnabled: boolean = false;
+  @StorageProp(KEY_POWER_EMOJI) emojiEnabled: boolean = true;
+  @StorageProp(KEY_POWER_EMOJI_REACTIONS) emojiReactionsEnabled: boolean = true;
+  @StorageProp(KEY_POWER_AUTOPLAY_GIF) autoplayGif: boolean = true;
+  @StorageProp(KEY_POWER_AUTOPLAY_VIDEO) autoplayVideo: boolean = true;
   @Prop showAvatar: boolean = true;     // last row of a same-sender run
   @Prop showSenderName: boolean = true; // first row of a same-sender run
+
+  aboutToAppear(): void {
+    if (this.msg.contentType === 'video' && !this.msg.isAnimation &&
+      this.autoplayVideo && !this.powerSaving && this.msg.videoPath === '') {
+      this.onAutoplayVideoNeedDownload(this.msg.id);
+    }
+  }
 
   // mm:ss (or h:mm:ss for long videos) duration badge text.
   private formatDuration(totalSeconds: number): string {
@@ -100,6 +118,26 @@ export struct MessageBubble {
   // back to its intrinsic width and overflows. A concrete maxWidth forces wrapping.
   private inlineMaxW(): number {
     return this.screenW * 0.78 - 32;
+  }
+
+  private effectDuration(duration: number): number {
+    return this.chatEffectsEnabled && this.messageEffectsEnabled && !this.powerSaving ? duration : 0;
+  }
+
+  private reactionDuration(duration: number): number {
+    return this.chatEffectsEnabled && this.reactionEffectsEnabled &&
+      this.emojiEnabled && this.emojiReactionsEnabled && !this.powerSaving ? duration : 0;
+  }
+
+  private autoplayInlineVideo(): boolean {
+    if (this.powerSaving || this.msg.contentType !== 'video' || this.msg.videoPath === '') {
+      return false;
+    }
+    return this.msg.isAnimation ? this.autoplayGif : this.autoplayVideo;
+  }
+
+  private autoplayCategory(): string {
+    return this.msg.isAnimation ? 'gif' : 'video';
   }
 
   // The link preview card adds its own 8+8 horizontal padding on top of the
@@ -406,7 +444,12 @@ export struct MessageBubble {
         }
         .backgroundColor(r.isChosen ? COLOR_PRIMARY : '#00000010')
         .borderRadius(11).padding({ left: 8, right: 8, top: 3, bottom: 3 })
-        .margin({ right: 4, top: 4 });
+        .margin({ right: 4, top: 4 })
+        .transition(
+          TransitionEffect.scale({ x: 0.6, y: 0.6 })
+            .combine(TransitionEffect.OPACITY)
+            .animation({ duration: this.reactionDuration(180), curve: Curve.EaseOut })
+        );
       }, (r: ReactionInfo) => `rx_${r.emoji}`);
     }.constraintSize({ maxWidth: this.inlineMaxW() }).margin({ top: 4 });
   }
@@ -499,7 +542,15 @@ export struct MessageBubble {
       }
     } else if (this.msg.contentType === 'photo' || this.msg.contentType === 'video') {
       Stack() {
-        if (this.msg.photoPath !== '') {
+        if (this.autoplayInlineVideo()) {
+          SmartLoopVideo({
+            videoPath: this.msg.videoPath,
+            thumbPath: this.msg.photoPath,
+            boxWidth: this.mediaBox().width,
+            boxHeight: this.mediaBox().height,
+            powerCategory: this.autoplayCategory()
+          });
+        } else if (this.msg.photoPath !== '') {
           // Keep the thumbnail mounted while fullscreen preview is open. ArkUI's
           // geometry transition can re-parent this Image node; with LazyForEach
           // recycling that occasionally restored only the placeholder/background
@@ -514,7 +565,7 @@ export struct MessageBubble {
             }
           }.width(this.mediaBox().width).height(this.mediaBox().height);
         }
-        if (this.msg.contentType === 'video') {
+        if (this.msg.contentType === 'video' && !this.autoplayInlineVideo()) {
           this.playBadge(Math.min(58, Math.min(this.mediaBox().width, this.mediaBox().height) * 0.36));
           Text(this.formatDuration(this.msg.videoDuration))
             .fontSize(11).fontColor(Color.White).backgroundColor('#00000066')
@@ -589,14 +640,18 @@ export struct MessageBubble {
           .width(this.stickerW()).height(this.stickerH()).objectFit(ImageFit.Contain);
       } else if (this.msg.stickerFormat === 'tgs' && this.msg.stickerPath !== '') {
         TgsStickerView({ tgsPath: this.msg.stickerPath, thumbPath: this.msg.photoPath,
-          boxWidth: this.stickerW(), boxHeight: this.stickerH() });
+          boxWidth: this.stickerW(), boxHeight: this.stickerH(),
+          powerCategory: this.msg.customEmojiId !== '' ? 'emojiChat' : 'sticker' });
       } else if (this.msg.stickerFormat === 'webm' && this.msg.stickerPath !== '') {
         SmartLoopVideo({ videoPath: this.msg.stickerPath, thumbPath: this.msg.photoPath,
-          boxWidth: this.stickerW(), boxHeight: this.stickerH() });
+          boxWidth: this.stickerW(), boxHeight: this.stickerH(),
+          powerCategory: this.msg.customEmojiId !== '' ? 'emojiChat' : 'sticker' });
       } else if (this.msg.photoPath !== '') {
         Image(this.msg.photoPath.startsWith('/') ? `file://${this.msg.photoPath}` : this.msg.photoPath)
           .width(this.stickerW()).height(this.stickerH()).objectFit(ImageFit.Contain)
-          .transition(TransitionEffect.OPACITY.animation({ duration: 250, curve: Curve.EaseOut }));
+          .transition(TransitionEffect.OPACITY.animation({
+            duration: this.effectDuration(250), curve: Curve.EaseOut
+          }));
       } else {
         Stack() {
           this.loadingRing(32, this.msg.photoProgress);
@@ -824,7 +879,7 @@ export struct MessageBubble {
     .transition(this.animateIn
       ? TransitionEffect.translate({ y: 16 })
         .combine(TransitionEffect.OPACITY)
-        .animation({ duration: 220, curve: Curve.FastOutSlowIn })
+        .animation({ duration: this.effectDuration(220), curve: Curve.FastOutSlowIn })
       : TransitionEffect.IDENTITY);
     }
   }

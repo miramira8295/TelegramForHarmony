@@ -19,6 +19,9 @@ export interface ChatEntry {
   autoDeleteTime: number;
   kind: ChatKind;
   isMarkedUnread: boolean; // manually flagged unread (unread_count may be 0)
+  liveGroupCallId: number; // current video chat/group call bound to this chat
+  isLive: boolean;        // true only after groupCall.is_active is confirmed
+  isRtmpLive: boolean;
 }
 
 export function cloneEntry(e: ChatEntry): ChatEntry {
@@ -28,7 +31,8 @@ export function cloneEntry(e: ChatEntry): ChatEntry {
     lastMessageId: e.lastMessageId,
     lastSenderName: e.lastSenderName, photoFileId: e.photoFileId,
     avatarPath: e.avatarPath, initials: e.initials, autoDeleteTime: e.autoDeleteTime,
-    kind: e.kind, isMarkedUnread: e.isMarkedUnread
+    kind: e.kind, isMarkedUnread: e.isMarkedUnread,
+    liveGroupCallId: e.liveGroupCallId, isLive: e.isLive, isRtmpLive: e.isRtmpLive
   };
 }
 

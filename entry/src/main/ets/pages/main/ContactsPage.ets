@@ -4,6 +4,7 @@ import { AvatarView } from '../chatlist/AvatarView';
 import { COLOR_PRIMARY, COLOR_TEXT_PRIMARY, COLOR_TEXT_SECONDARY } from '../../util/theme';
 import { TdRequest, TdObject, TdError } from '../../tdkit/TdTypes';
 import { router } from '@kit.ArkUI';
+import { searchPublicUsers } from '../../store/PublicUserSearch';
 
 const CARD_BG: ResourceColor = $r('app.color.surface');
 const CARD_RADIUS: number = 14;
@@ -19,8 +20,12 @@ export struct ContactsPage {
   @State contacts: ContactItem[] = [];
   @State loading: boolean = true;
   @State query: string = '';
+  @State remoteUsers: ContactItem[] = [];
+  @State remoteLoading: boolean = false;
   private store: ContactsStore | null = null;
   private unsub: (() => void) | null = null;
+  private searchTimer: number = -1;
+  private searchSequence: number = 0;
 
   aboutToAppear(): void {
     const store = new ContactsStore(getTdClient());
@@ -33,8 +38,46 @@ export struct ContactsPage {
   }
 
   aboutToDisappear(): void {
+    this.searchSequence++;
+    if (this.searchTimer !== -1) {
+      clearTimeout(this.searchTimer);
+      this.searchTimer = -1;
+    }
     if (this.unsub !== null) { this.unsub(); this.unsub = null; }
     if (this.store !== null) { this.store.close(); this.store = null; }
+  }
+
+  private onQueryChanged(value: string): void {
+    this.query = value;
+    const sequence = ++this.searchSequence;
+    if (this.searchTimer !== -1) {
+      clearTimeout(this.searchTimer);
+      this.searchTimer = -1;
+    }
+    const normalized = value.trim().replace(/^@/, '');
+    if (normalized.length < 2) {
+      this.remoteUsers = [];
+      this.remoteLoading = false;
+      return;
+    }
+    this.remoteLoading = true;
+    this.searchTimer = setTimeout((): void => {
+      this.searchTimer = -1;
+      searchPublicUsers(getTdClient(), value).then((users: ContactItem[]): void => {
+        if (sequence !== this.searchSequence) {
+          return;
+        }
+        this.remoteUsers = users;
+        this.remoteLoading = false;
+      }).catch((error: TdError): void => {
+        if (sequence !== this.searchSequence) {
+          return;
+        }
+        console.warn(`ContactsPage.searchPublicUsers failed: ${error.message}`);
+        this.remoteUsers = [];
+        this.remoteLoading = false;
+      });
+    }, 350);
   }
 
   // Ensure the private chat exists (TDLib may not have it loaded yet), then
@@ -59,7 +102,17 @@ export struct ContactsPage {
     if (q === '') {
       return this.contacts;
     }
-    return this.contacts.filter((c: ContactItem) => c.name.toLowerCase().includes(q));
+    const localQuery = q.replace(/^@/, '');
+    const result = this.contacts.filter((c: ContactItem): boolean =>
+      c.name.toLowerCase().includes(localQuery) ||
+        c.statusText.toLowerCase().includes(q)
+    );
+    for (const user of this.remoteUsers) {
+      if (!result.some((item: ContactItem): boolean => item.id === user.id)) {
+        result.push(user);
+      }
+    }
+    return result;
   }
 
   @Builder
@@ -80,11 +133,11 @@ export struct ContactsPage {
     Column() {
       Row({ space: 8 }) {
         SymbolGlyph($r('sys.symbol.magnifyingglass')).fontSize(17).fontColor([COLOR_TEXT_SECONDARY]);
-        TextInput({ text: this.query, placeholder: '搜索联系人' })
+        TextInput({ text: this.query, placeholder: '搜索联系人或 @用户名' })
           .layoutWeight(1).height(36).fontSize(16)
           .backgroundColor(Color.Transparent).padding(0).borderRadius(0)
           .placeholderColor(COLOR_TEXT_SECONDARY)
-          .onChange((v: string) => { this.query = v; });
+          .onChange((v: string): void => { this.onQueryChanged(v); });
       }
       .width('100%').padding({ left: 12, right: 12, top: 4, bottom: 4 })
       .height(44)
@@ -145,7 +198,7 @@ export struct ContactsPage {
   listCard() {
     Column() {
       Column() {
-        Text('按最后上线时间排序')
+        Text(this.query.trim() === '' ? '按最后上线时间排序' : '联系人与全局用户')
           .fontSize(13).fontColor(COLOR_PRIMARY).fontWeight(FontWeight.Medium)
           .width('100%').padding({ left: 14, right: 14, top: 10, bottom: 6 });
         ForEach(this.filtered(), (c: ContactItem, index: number) => {
@@ -154,6 +207,22 @@ export struct ContactsPage {
           }
           this.contactRow(c);
         }, (c: ContactItem) => `${c.id}_${c.avatarPath}`);
+        if (this.remoteLoading) {
+          Row({ space: 8 }) {
+            LoadingProgress().width(18).height(18).color(COLOR_PRIMARY);
+            Text('正在搜索陌生用户…').fontSize(13).fontColor(COLOR_TEXT_SECONDARY);
+          }
+          .width('100%')
+          .height(48)
+          .justifyContent(FlexAlign.Center);
+        } else if (this.query.trim() !== '' && this.filtered().length === 0) {
+          Text('没有找到用户')
+            .fontSize(14)
+            .fontColor(COLOR_TEXT_SECONDARY)
+            .width('100%')
+            .height(58)
+            .textAlign(TextAlign.Center);
+        }
       }
       .width('100%').backgroundColor(CARD_BG).borderRadius(CARD_RADIUS)
       .padding({ bottom: 4 });

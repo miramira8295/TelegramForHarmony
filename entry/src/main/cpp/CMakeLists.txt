@@ -27,4 +27,8 @@ add_library(tdjson SHARED IMPORTED)
 set_target_properties(tdjson PROPERTIES IMPORTED_LOCATION
     ${CMAKE_CURRENT_SOURCE_DIR}/../../../libs/${OHOS_ARCH}/libtdjson.so)
 
-target_link_libraries(entry PUBLIC libace_napi.z.so tdjson libhilog_ndk.z.so)
+add_library(tgcalls_ohos SHARED IMPORTED)
+set_target_properties(tgcalls_ohos PROPERTIES IMPORTED_LOCATION
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../../libs/${OHOS_ARCH}/libtgcalls_ohos.so)
+
+target_link_libraries(entry PUBLIC libace_napi.z.so tdjson tgcalls_ohos libhilog_ndk.z.so)

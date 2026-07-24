@@ -2,7 +2,7 @@ import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window, KeyboardAvoidMode } from '@kit.ArkUI';
 import { initTdKit } from '../tdkit/Globals';
-import { initSettings } from '../store/AppSettings';
+import { initSettings, refreshPowerSavingState } from '../store/AppSettings';
 
 const DOMAIN = 0x0000;
 
@@ -11,10 +11,12 @@ export default class EntryAbility extends UIAbility {
     // Loads persisted settings into AppStorage and applies the stored night
     // mode (which subsumes the old unconditional COLOR_MODE_NOT_SET).
     initSettings(this.context);
-    initTdKit(this.context.filesDir);
+    initTdKit(this.context);
     // Cold start via a tg:// deep link — stash it; Index routes it once auth
     // reaches Ready (the UI/router aren't up yet here).
     this.stashDeepLink(want);
+    AppStorage.setOrCreate('appIsForeground', false);
+    AppStorage.setOrCreate('appForegroundEpoch', 0);
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onCreate');
   }
 
@@ -95,11 +97,15 @@ export default class EntryAbility extends UIAbility {
 
   onForeground(): void {
     // Ability has brought to foreground
+    refreshPowerSavingState();
+    AppStorage.setOrCreate('appIsForeground', true);
+    AppStorage.setOrCreate('appForegroundEpoch', Date.now());
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onForeground');
   }
 
   onBackground(): void {
     // Ability has back to background
+    AppStorage.setOrCreate('appIsForeground', false);
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onBackground');
   }
 }

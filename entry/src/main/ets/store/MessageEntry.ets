@@ -58,6 +58,7 @@ export interface MessageEntry {
   videoMimeType: string;        // source mime type from TDLib, e.g. video/mp4
   videoFileName: string;        // original file name ('' = unknown)
   videoDuration: number;        // seconds
+  isAnimation: boolean;         // Telegram GIF/messageAnimation
   videoPath: string;            // local path once the full video is downloaded
   videoProgress: number;        // 0-100 download progress of the full video file
   stickerFileId: number;        // animated (TGS) sticker source file id, 0 otherwise
@@ -131,7 +132,7 @@ export function cloneMessage(m: MessageEntry): MessageEntry {
     inlineButtons: m.inlineButtons,
     photoFullFileId: m.photoFullFileId, photoFullPath: m.photoFullPath, photoFullProgress: m.photoFullProgress,
     videoFileId: m.videoFileId, videoFileSize: m.videoFileSize, videoMimeType: m.videoMimeType,
-    videoFileName: m.videoFileName, videoDuration: m.videoDuration,
+    videoFileName: m.videoFileName, videoDuration: m.videoDuration, isAnimation: m.isAnimation,
     videoPath: m.videoPath, videoProgress: m.videoProgress,
     stickerFileId: m.stickerFileId, stickerFormat: m.stickerFormat, stickerPath: m.stickerPath,
     customEmojiId: m.customEmojiId
@@ -466,6 +467,7 @@ export function buildMessageEntry(message: TdObject, users: UserStore): MessageE
     videoMimeType: c.videoMimeType,
     videoFileName: c.videoFileName,
     videoDuration: c.videoDuration,
+    isAnimation: c.isAnimation ?? false,
     videoPath: '',
     videoProgress: 0,
     stickerFileId: c.stickerFileId ?? 0,

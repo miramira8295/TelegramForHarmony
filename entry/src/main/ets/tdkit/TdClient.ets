@@ -59,6 +59,15 @@ export class TdClient {
     };
   }
 
+  dispose(): void {
+    for (const entry of this.pending.values()) {
+      this.timer.clearTimeout(entry.timerId);
+      entry.reject(new TdError(-1, 'TDLib account session changed'));
+    }
+    this.pending.clear();
+    this.handlers.clear();
+  }
+
   private onReceive(json: string): void {
     let obj: TdObject;
     try {

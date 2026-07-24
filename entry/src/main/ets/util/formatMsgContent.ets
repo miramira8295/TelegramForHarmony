@@ -21,6 +21,7 @@ export interface MsgContent {
   videoMimeType: string; // e.g. video/mp4, video/webm
   videoFileName: string; // original file name, '' when unknown/non-video
   photoFullFileId: number; // full-resolution photo file id, 0 when no upgrade exists
+  isAnimation?: boolean;   // Telegram GIF/messageAnimation, not a normal video
   stickerFileId?: number;  // animated sticker source file (TGS), 0/absent otherwise
   customEmojiId?: string;  // single custom-emoji text message (resolved async)
   stickerFormat?: string;  // 'webp' | 'tgs' | 'webm', absent for non-stickers
@@ -224,6 +225,7 @@ export function formatMsgContent(message: TdObject): MsgContent {
       ? (((animFile['size'] as number | undefined) ?? 0) || ((animFile['expected_size'] as number | undefined) ?? 0)) : 0;
     return {
       contentType: 'video',
+      isAnimation: true,
       text: captionText(content!),
       photoFileId: size.fileId,
       photoWidth: size.width,
@@ -326,6 +328,10 @@ function stickerMsgContent(sticker: TdObject | undefined): MsgContent | null {
   {
     const format = sticker !== undefined ? (sticker['format'] as TdObject | undefined) : undefined;
     const formatName = format !== undefined ? ((format['@type'] as string | undefined) ?? '') : '';
+    // Keep Telegram's Unicode alternative even when an animated sticker file
+    // is available. Embedded consumers (for example the livestream overlay)
+    // can show this immediately without having to host another media player.
+    const fallbackEmoji = sticker !== undefined ? ((sticker['emoji'] as string | undefined) ?? '') : '';
     const stickerFile = sticker !== undefined ? (sticker['sticker'] as TdObject | undefined) : undefined;
     const thumb = sticker !== undefined ? (sticker['thumbnail'] as TdObject | undefined) : undefined;
     // Only raster thumbnails are Image-decodable — a thumbnail can itself be
@@ -344,7 +350,7 @@ function stickerMsgContent(sticker: TdObject | undefined): MsgContent | null {
     const fileId = isWebp ? stickerFileId : thumbFileId;
     if (fileId !== 0 || (!isWebp && stickerFileId !== 0)) {
       return {
-        contentType: 'sticker', text: '',
+        contentType: 'sticker', text: fallbackEmoji,
         photoFileId: fileId,
         photoWidth: sticker !== undefined ? ((sticker['width'] as number | undefined) ?? 0) : 0,
         photoHeight: sticker !== undefined ? ((sticker['height'] as number | undefined) ?? 0) : 0,
@@ -357,7 +363,6 @@ function stickerMsgContent(sticker: TdObject | undefined): MsgContent | null {
       };
     }
     // No renderable file at all → the sticker's emoji, big and bare.
-    const fallbackEmoji = sticker !== undefined ? ((sticker['emoji'] as string | undefined) ?? '') : '';
     if (fallbackEmoji !== '') {
       return {
         contentType: 'emoji', text: fallbackEmoji, photoFileId: 0, photoWidth: 0, photoHeight: 0, placeholderLabel: '', entities: [],

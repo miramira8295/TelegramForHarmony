@@ -19,6 +19,8 @@ export class ChatStore {
   private chats: Map<number, ChatEntry> = new Map();
   private positions: Map<string, Map<number, PositionInfo>> = new Map();
   private subs: Sub[] = [];
+  private groupCallChats: Map<number, number> = new Map();
+  private groupCallLoading: Set<number> = new Set();
 
   constructor(client: TdClient, users: UserStore) {
     this.client = client;
@@ -32,6 +34,8 @@ export class ChatStore {
     client.onUpdate('updateChatNotificationSettings', (u: TdObject) => this.onNotify(u));
     client.onUpdate('updateChatMessageAutoDeleteTime', (u: TdObject) => this.onAutoDelete(u));
     client.onUpdate('updateChatIsMarkedAsUnread', (u: TdObject) => this.onMarkedUnread(u));
+    client.onUpdate('updateChatVideoChat', (u: TdObject) => this.onVideoChat(u));
+    client.onUpdate('updateGroupCall', (u: TdObject) => this.onGroupCall(u));
   }
 
   subscribe(listener: (chats: ChatEntry[]) => void, listKey: string = MAIN): () => void {
@@ -208,14 +212,65 @@ export class ChatStore {
     return (small['id'] as number | undefined) ?? 0;
   }
 
+  private videoChatId(videoChat: TdObject | undefined): number {
+    return videoChat !== undefined
+      ? ((videoChat['group_call_id'] as number | undefined) ?? 0) : 0;
+  }
+
+  private rememberGroupCall(chatId: number, previousId: number, groupCallId: number): void {
+    if (previousId > 0 && this.groupCallChats.get(previousId) === chatId) {
+      this.groupCallChats.delete(previousId);
+    }
+    if (groupCallId > 0) {
+      this.groupCallChats.set(groupCallId, chatId);
+      this.requestGroupCall(groupCallId);
+    }
+  }
+
+  // chat.video_chat only carries the call id. Confirm is_active through
+  // getGroupCall so scheduled/ended calls don't receive a LIVE badge.
+  private requestGroupCall(groupCallId: number): void {
+    if (groupCallId <= 0 || this.groupCallLoading.has(groupCallId)) { return; }
+    this.groupCallLoading.add(groupCallId);
+    const request: TdRequest = { '@type': 'getGroupCall' };
+    request['group_call_id'] = groupCallId;
+    this.client.send(request).then((groupCall: TdObject): void => {
+      this.groupCallLoading.delete(groupCallId);
+      this.applyGroupCall(groupCall);
+    }).catch((error: TdError): void => {
+      this.groupCallLoading.delete(groupCallId);
+      if (error.code !== 404) {
+        console.error(`ChatStore.getGroupCall(${groupCallId}) failed: ${error.message}`);
+      }
+    });
+  }
+
+  private applyGroupCall(groupCall: TdObject): void {
+    const groupCallId = (groupCall['id'] as number | undefined) ?? 0;
+    const chatId = this.groupCallChats.get(groupCallId);
+    if (chatId === undefined) { return; }
+    const entry = this.chats.get(chatId);
+    if (entry === undefined || entry.liveGroupCallId !== groupCallId) { return; }
+    const isLive = (groupCall['is_active'] as boolean | undefined) ?? false;
+    const isRtmpLive = (groupCall['is_rtmp_stream'] as boolean | undefined) ?? false;
+    if (entry.isLive === isLive && entry.isRtmpLive === isRtmpLive) { return; }
+    const next = cloneEntry(entry);
+    next.isLive = isLive;
+    next.isRtmpLive = isRtmpLive;
+    this.chats.set(chatId, next);
+    this.notify();
+  }
+
   private onNewChat(update: TdObject): void {
     const chat = update['chat'] as TdObject | undefined;
     if (chat === undefined) {
       return;
     }
     const id = chat['id'] as number;
+    const previousGroupCallId = this.chats.get(id)?.liveGroupCallId ?? 0;
     const title = (chat['title'] as string | undefined) ?? '';
     const lastMsg = chat['last_message'] as TdObject | undefined;
+    const groupCallId = this.videoChatId(chat['video_chat'] as TdObject | undefined);
     const entry: ChatEntry = {
       id,
       title,
@@ -230,9 +285,13 @@ export class ChatStore {
       initials: computeInitials(title),
       autoDeleteTime: (chat['message_auto_delete_time'] as number | undefined) ?? 0,
       kind: chatKindOf(chat['type'] as TdObject | undefined),
-      isMarkedUnread: (chat['is_marked_as_unread'] as boolean | undefined) ?? false
+      isMarkedUnread: (chat['is_marked_as_unread'] as boolean | undefined) ?? false,
+      liveGroupCallId: groupCallId,
+      isLive: false,
+      isRtmpLive: false
     };
     this.chats.set(id, entry);
+    this.rememberGroupCall(id, previousGroupCallId, groupCallId);
     const positions = (chat['positions'] as TdObject[] | undefined) ?? [];
     this.applyPositions(id, positions);
     this.notify();
@@ -341,6 +400,28 @@ export class ChatStore {
     c.autoDeleteTime = (update['message_auto_delete_time'] as number | undefined) ?? 0;
     this.chats.set(id, c);
     this.notify();
+  }
+
+  private onVideoChat(update: TdObject): void {
+    const chatId = (update['chat_id'] as number | undefined) ?? 0;
+    const entry = this.chats.get(chatId);
+    if (entry === undefined) { return; }
+    const groupCallId = this.videoChatId(update['video_chat'] as TdObject | undefined);
+    const previousId = entry.liveGroupCallId;
+    const next = cloneEntry(entry);
+    next.liveGroupCallId = groupCallId;
+    // A newly announced id can still be scheduled. Keep the badge hidden
+    // until getGroupCall/updateGroupCall confirms is_active.
+    next.isLive = false;
+    next.isRtmpLive = false;
+    this.chats.set(chatId, next);
+    this.rememberGroupCall(chatId, previousId, groupCallId);
+    this.notify();
+  }
+
+  private onGroupCall(update: TdObject): void {
+    const groupCall = update['group_call'] as TdObject | undefined;
+    if (groupCall !== undefined) { this.applyGroupCall(groupCall); }
   }
 
   private notify(): void {

@@ -1,4 +1,9 @@
 import { IjkMediaPlayer, OnPreparedListener, OnErrorListener, OnCompletionListener } from '@ohos/ijkplayer';
+import {
+  KEY_POWER_ACTIVE, KEY_POWER_AUTOPLAY_GIF, KEY_POWER_AUTOPLAY_VIDEO, KEY_POWER_EMOJI,
+  KEY_POWER_EMOJI_CHAT, KEY_POWER_EMOJI_REACTIONS, KEY_POWER_EMOJI_STATUS,
+  KEY_POWER_STICKERS, KEY_POWER_STICKER_AUTOPLAY, KEY_POWER_STICKER_LOOP
+} from '../../store/AppSettings';
 
 let nextWebmStickerId: number = 1;
 // Pre-EOF rewind: poll the position and seek to 0 this far before the end.
@@ -76,6 +81,17 @@ export struct WebmStickerView {
   @Prop thumbPath: string = '';
   @Prop boxWidth: number = 160;
   @Prop boxHeight: number = 160;
+  @Prop powerCategory: string = 'sticker';
+  @StorageProp(KEY_POWER_ACTIVE) powerSaving: boolean = false;
+  @StorageProp(KEY_POWER_STICKERS) stickersEnabled: boolean = true;
+  @StorageProp(KEY_POWER_EMOJI) emojiEnabled: boolean = true;
+  @StorageProp(KEY_POWER_AUTOPLAY_GIF) autoplayGif: boolean = true;
+  @StorageProp(KEY_POWER_AUTOPLAY_VIDEO) autoplayVideo: boolean = true;
+  @StorageProp(KEY_POWER_STICKER_AUTOPLAY) stickerAutoplay: boolean = true;
+  @StorageProp(KEY_POWER_STICKER_LOOP) stickerLoop: boolean = true;
+  @StorageProp(KEY_POWER_EMOJI_CHAT) emojiChat: boolean = true;
+  @StorageProp(KEY_POWER_EMOJI_REACTIONS) emojiReactions: boolean = true;
+  @StorageProp(KEY_POWER_EMOJI_STATUS) emojiStatus: boolean = true;
   @State failed: boolean = false;
   private player: IjkMediaPlayer | null = null;
   private readonly instanceId: number = nextWebmStickerId++;
@@ -95,6 +111,9 @@ export struct WebmStickerView {
   // hitches even with packet-buffering disabled.
   private startLoopWatch(): void {
     this.stopLoopWatch();
+    if (!this.loopEnabled()) {
+      return;
+    }
     this.loopTimer = setInterval(() => {
       const p = this.player;
       if (p === null || this.durationMs <= 0) {
@@ -136,7 +155,7 @@ export struct WebmStickerView {
   }
 
   private initPlayer(context: object): void {
-    if (this.destroyed || this.player !== null || this.webmPath === '') {
+    if (this.destroyed || this.player !== null || this.webmPath === '' || this.powerSuspended()) {
       return;
     }
     try {
@@ -151,7 +170,7 @@ export struct WebmStickerView {
             return;
           }
           player.setVolume('0', '0'); // stickers are always silent
-          player.setLoopCount(true);  // safety net if the pre-EOF rewind misses
+          player.setLoopCount(this.loopEnabled());  // safety net if the pre-EOF rewind misses
           player.start();
           this.durationMs = Math.max(0, player.getDuration());
           this.startLoopWatch();
@@ -162,7 +181,7 @@ export struct WebmStickerView {
       // playback instead of stopping after one pass.
       const completionListener: OnCompletionListener = {
         onCompletion: (): void => {
-          if (this.player !== player || this.destroyed) {
+          if (this.player !== player || this.destroyed || !this.loopEnabled()) {
             return;
           }
           try {
@@ -199,8 +218,41 @@ export struct WebmStickerView {
     }
   }
 
+  private powerSuspended(): boolean {
+    if (this.powerSaving) {
+      return true;
+    }
+    if (this.powerCategory === 'gif') {
+      return !this.autoplayGif;
+    }
+    if (this.powerCategory === 'video') {
+      return !this.autoplayVideo;
+    }
+    if (this.powerCategory === 'emojiStatus' || this.powerCategory === 'emoji') {
+      return !this.emojiEnabled || !this.emojiStatus;
+    }
+    if (this.powerCategory === 'emojiReaction') {
+      return !this.emojiEnabled || !this.emojiReactions;
+    }
+    if (this.powerCategory === 'emojiChat') {
+      return !this.emojiEnabled || !this.emojiChat;
+    }
+    return !this.stickersEnabled || !this.stickerAutoplay;
+  }
+
+  private loopEnabled(): boolean {
+    return this.powerCategory === 'sticker' ? this.stickerLoop : true;
+  }
+
   build() {
-    if (this.failed && this.thumbPath !== '') {
+    if (this.powerSuspended()) {
+      if (this.thumbPath !== '') {
+        Image(this.thumbPath.startsWith('/') ? `file://${this.thumbPath}` : this.thumbPath)
+          .width(this.boxWidth).height(this.boxHeight).objectFit(ImageFit.Contain);
+      } else {
+        Stack().width(this.boxWidth).height(this.boxHeight);
+      }
+    } else if (this.failed && this.thumbPath !== '') {
       Image(this.thumbPath.startsWith('/') ? `file://${this.thumbPath}` : this.thumbPath)
         .width(this.boxWidth).height(this.boxHeight).objectFit(ImageFit.Contain);
     } else {

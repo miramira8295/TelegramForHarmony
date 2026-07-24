@@ -1,10 +1,11 @@
 import { getFolderStore, getUnreadCountStore, getChatStore, getTdClient } from '../../tdkit/Globals';
-import { TdObject } from '../../tdkit/TdTypes';
+import { TdError, TdObject, TdRequest } from '../../tdkit/TdTypes';
 import { FolderInfo } from '../../store/FolderStore';
 import { ChatListView } from './ChatListView';
 import { MainTabBody } from './MainTabBody';
 import { COLOR_PRIMARY, COLOR_TEXT_PRIMARY, COLOR_TEXT_SECONDARY, COLOR_TAB_SELECTED, COLOR_TAB_UNSELECTED, COLOR_BADGE_BG, COLOR_TAB_PILL_BG } from '../../util/theme';
 import { router } from '@kit.ArkUI';
+import { KEY_POWER_SMOOTH_TRANSITIONS, powerAnimationDuration } from '../../store/AppSettings';
 
 interface TabSpec {
   key: string;
@@ -143,6 +144,42 @@ export struct ChatListPage {
     return specs;
   }
 
+  private openSavedMessages(): void {
+    const meRequest: TdRequest = { '@type': 'getMe' };
+    getTdClient().send(meRequest).then((me: TdObject): Promise<TdObject> => {
+      const userId = (me['id'] as number | undefined) ?? 0;
+      if (userId <= 0) {
+        return Promise.reject(new Error('当前账号信息不可用'));
+      }
+      const chatRequest: TdRequest = { '@type': 'createPrivateChat' };
+      chatRequest['user_id'] = userId;
+      chatRequest['force'] = false;
+      return getTdClient().send(chatRequest);
+    }).then((chat: TdObject): void => {
+      const chatId = (chat['id'] as number | undefined) ?? 0;
+      if (chatId > 0) {
+        const params: Record<string, Object> = { 'chatId': chatId };
+        router.pushUrl({ url: 'pages/chat/ChatPage', params: params });
+      }
+    }).catch((error: TdError): void => {
+      console.error(`ChatListPage.openSavedMessages failed: ${error.message}`);
+    });
+  }
+
+  @Builder
+  moreMenu() {
+    Menu() {
+      MenuItem({ content: '新建群组' })
+        .onClick((): void => {
+          router.pushUrl({ url: 'pages/main/NewGroupPage' });
+        });
+      MenuItem({ content: '我的收藏' })
+        .onClick((): void => {
+          this.openSavedMessages();
+        });
+    }
+  }
+
   @Builder
   topBar() {
     if (this.searchMode) {
@@ -182,7 +219,12 @@ export struct ChatListPage {
         }.alignItems(VerticalAlign.Bottom).layoutWeight(1);
         SymbolGlyph($r('sys.symbol.magnifyingglass')).fontSize(24).fontColor([COLOR_TEXT_SECONDARY]).margin({ right: 16 })
           .onClick(() => { router.pushUrl({ url: 'pages/search/GlobalSearchPage' }); });
-        SymbolGlyph($r('sys.symbol.more')).fontSize(24).fontColor([COLOR_TEXT_SECONDARY]);
+        Row() {
+          SymbolGlyph($r('sys.symbol.more')).fontSize(24).fontColor([COLOR_TEXT_SECONDARY]);
+        }
+        .width(40).height(40)
+        .justifyContent(FlexAlign.Center)
+        .bindMenu(this.moreMenu());
       }.width('100%').padding({ left: 16, right: 16, top: 12, bottom: 8 });
     }
   }
@@ -281,12 +323,16 @@ export struct ChatListPage {
       // scroll the strip if that tab sits outside the visible range.
       .onAnimationStart((_index: number, targetIndex: number) => {
         this.selectedIndex = targetIndex;
-        animateTo({ duration: 250, curve: Curve.EaseOut }, () => { this.moveIndicatorTo(targetIndex); });
+        animateTo({
+          duration: powerAnimationDuration(KEY_POWER_SMOOTH_TRANSITIONS, 250), curve: Curve.EaseOut
+        }, () => { this.moveIndicatorTo(targetIndex); });
         this.ensureTabVisible(targetIndex);
       })
       .onChange((index: number) => {
         this.selectedIndex = index;
-        animateTo({ duration: 200, curve: Curve.EaseOut }, () => { this.moveIndicatorTo(index); });
+        animateTo({
+          duration: powerAnimationDuration(KEY_POWER_SMOOTH_TRANSITIONS, 200), curve: Curve.EaseOut
+        }, () => { this.moveIndicatorTo(index); });
         this.ensureTabVisible(index);
       })
       .layoutWeight(1)

@@ -11,6 +11,7 @@ export struct AvLoopVideo {
   @Prop videoPath: string;
   @Prop boxWidth: number = 100;
   @Prop boxHeight: number = 100;
+  @Prop loop: boolean = true;
   onFailed: () => void = (): void => {};   // codec/demux failure — caller may fall back
   onWorking: () => void = (): void => {};  // first successful playback
   private player: media.AVPlayer | null = null;
@@ -63,7 +64,7 @@ export struct AvLoopVideo {
             this.onFailed();
           });
         } else if (state === 'prepared') {
-          p.loop = true;
+          p.loop = this.loop;
           p.setVolume(0);
           p.play().catch((e: Object) => {
             console.error(`AvLoopVideo.play failed: ${JSON.stringify(e)}`);

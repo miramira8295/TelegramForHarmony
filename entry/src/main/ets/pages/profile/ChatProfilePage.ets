@@ -7,6 +7,10 @@ import { TdObject, TdRequest, TdError } from '../../tdkit/TdTypes';
 import { COLOR_PRIMARY, COLOR_TEXT_PRIMARY, COLOR_TEXT_SECONDARY } from '../../util/theme';
 import { ExpandableText } from './ExpandableText';
 import { publicLink } from '../../util/telegramLink';
+import {
+  createVideoChat, getGroupCall, startScheduledVideoChat
+} from '../../tdkit/GroupCallApi';
+import { KEY_POWER_SMOOTH_TRANSITIONS, powerAnimationDuration } from '../../store/AppSettings';
 
 const CARD_BG: ResourceColor = $r('app.color.surface');
 const CARD_RADIUS: number = 14;
@@ -26,6 +30,9 @@ struct ChatProfilePage {
   @State chatUsername: string = '';
   @State isChannel: boolean = false;
   @State isMuted: boolean = false;
+  @State canManageVideoChats: boolean = false;
+  @State liveGroupCallId: number = 0;
+  @State creatingLive: boolean = false;
   @State members: MemberItem[] = [];
   private chatId: number = 0;
   private store: ChatProfileStore | null = null;
@@ -75,6 +82,8 @@ struct ChatProfilePage {
     this.chatUsername = s.username;
     this.isChannel = s.isChannel;
     this.isMuted = s.isMuted;
+    this.canManageVideoChats = s.canManageVideoChats;
+    this.liveGroupCallId = s.liveGroupCallId;
     this.members = s.members;
   }
 
@@ -105,6 +114,86 @@ struct ChatProfilePage {
   private openMemberProfile(userId: number): void {
     const params: Record<string, Object> = { 'userId': userId };
     router.pushUrl({ url: 'pages/profile/ProfilePage', params: params });
+  }
+
+  private openLiveViewer(groupCallId: number, isRtmpStream: boolean): void {
+    const params: Record<string, Object> = {
+      'groupCallId': groupCallId,
+      'chatId': this.chatId
+    };
+    router.pushUrl({
+      url: isRtmpStream
+        ? 'pages/chat/RtmpLiveStreamViewerPage'
+        : 'pages/chat/LiveStreamViewerPage',
+      params: params
+    });
+  }
+
+  private async openExistingLive(): Promise<void> {
+    if (this.liveGroupCallId <= 0 || this.creatingLive) { return; }
+    this.creatingLive = true;
+    const groupCallId = this.liveGroupCallId;
+    try {
+      let groupCall = await getGroupCall(getTdClient(), groupCallId);
+      let active = (groupCall['is_active'] as boolean | undefined) ?? false;
+      const scheduledStartDate =
+        (groupCall['scheduled_start_date'] as number | undefined) ?? 0;
+      if (!active && scheduledStartDate > 0 && this.canManageVideoChats) {
+        await startScheduledVideoChat(getTdClient(), groupCallId);
+        groupCall = await getGroupCall(getTdClient(), groupCallId);
+        active = (groupCall['is_active'] as boolean | undefined) ?? false;
+      }
+      if (!active) {
+        promptAction.showToast({ message: '直播尚未开始或已经结束', duration: 1600 });
+        return;
+      }
+      const isRtmp = (groupCall['is_rtmp_stream'] as boolean | undefined) ?? false;
+      this.openLiveViewer(groupCallId, isRtmp);
+    } catch (caught) {
+      const error = caught as TdError;
+      promptAction.showToast({ message: `进入直播失败：${error.message}`, duration: 1800 });
+    } finally {
+      this.creatingLive = false;
+    }
+  }
+
+  private createLiveMenu(): void {
+    if (!this.canManageVideoChats || this.creatingLive) { return; }
+    if (this.liveGroupCallId > 0) {
+      this.openExistingLive();
+      return;
+    }
+    promptAction.showActionMenu({
+      title: '发起直播',
+      buttons: [
+        { text: '多人语音/视频直播', color: '#3390EC' },
+        { text: '单向频道直播（RTMP）', color: '#3390EC' }
+      ]
+    }).then((result): void => {
+      if (result.index === 0) {
+        this.createAndOpenLive(false);
+      } else if (result.index === 1) {
+        this.createAndOpenLive(true);
+      }
+    }).catch((): void => {});
+  }
+
+  private async createAndOpenLive(isRtmpStream: boolean): Promise<void> {
+    if (this.creatingLive || !this.canManageVideoChats) { return; }
+    this.creatingLive = true;
+    try {
+      const groupCallId = await createVideoChat(getTdClient(), this.chatId, isRtmpStream);
+      if (groupCallId <= 0) {
+        throw new Error('Telegram 未返回直播间标识');
+      }
+      this.liveGroupCallId = groupCallId;
+      this.openLiveViewer(groupCallId, isRtmpStream);
+    } catch (caught) {
+      const error = caught as Error;
+      promptAction.showToast({ message: `发起直播失败：${error.message}`, duration: 2000 });
+    } finally {
+      this.creatingLive = false;
+    }
   }
 
   @Builder
@@ -140,12 +229,16 @@ struct ChatProfilePage {
           SymbolGlyph($r('sys.symbol.bell')).fontSize(22).fontColor([COLOR_PRIMARY])
             .transition(TransitionEffect.OPACITY
               .combine(TransitionEffect.scale({ x: 0.4, y: 0.4 }))
-              .animation({ duration: 220, curve: Curve.EaseOut }));
+              .animation({
+                duration: powerAnimationDuration(KEY_POWER_SMOOTH_TRANSITIONS, 220), curve: Curve.EaseOut
+              }));
         } else {
           SymbolGlyph($r('sys.symbol.bell_slash')).fontSize(22).fontColor([COLOR_PRIMARY])
             .transition(TransitionEffect.OPACITY
               .combine(TransitionEffect.scale({ x: 0.4, y: 0.4 }))
-              .animation({ duration: 220, curve: Curve.EaseOut }));
+              .animation({
+                duration: powerAnimationDuration(KEY_POWER_SMOOTH_TRANSITIONS, 220), curve: Curve.EaseOut
+              }));
         }
       }.height(24);
       Text(this.isMuted ? '取消静音' : '静音').fontSize(12).fontColor(COLOR_PRIMARY);
@@ -154,6 +247,23 @@ struct ChatProfilePage {
     .justifyContent(FlexAlign.Center)
     .backgroundColor(CARD_BG).borderRadius(CARD_RADIUS)
     .onClick(() => { this.toggleMute(); });
+  }
+
+  @Builder
+  liveButton() {
+    Column({ space: 5 }) {
+      SymbolGlyph($r('sys.symbol.camera')).fontSize(22).fontColor([COLOR_PRIMARY]);
+      Text(this.creatingLive
+        ? '处理中'
+        : (this.liveGroupCallId > 0 ? '进入直播' : '直播'))
+        .fontSize(12).fontColor(COLOR_PRIMARY);
+    }
+    .layoutWeight(1).height(62)
+    .justifyContent(FlexAlign.Center)
+    .backgroundColor(CARD_BG).borderRadius(CARD_RADIUS)
+    .enabled(!this.creatingLive)
+    .opacity(this.creatingLive ? 0.62 : 1)
+    .onClick((): void => { this.createLiveMenu(); });
   }
 
   @Builder
@@ -192,7 +302,11 @@ struct ChatProfilePage {
       this.actionButton('sys.symbol.message', '消息', () => { this.openChat(); });
       this.muteButton();
       this.actionButton('sys.symbol.magnifyingglass', '搜索', () => {});
-      this.actionButton('sys.symbol.more', '更多', () => {});
+      if (this.canManageVideoChats) {
+        this.liveButton();
+      } else {
+        this.actionButton('sys.symbol.more', '更多', () => {});
+      }
     }
     .width('100%').padding({ left: 12, right: 12, top: 14 });
   }

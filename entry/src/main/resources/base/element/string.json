@@ -14,7 +14,11 @@
     },
     {
       "name": "mic_permission_reason",
-      "value": "录制语音消息需要使用麦克风"
+      "value": "发送语音消息和直播发言需要使用麦克风"
+    },
+    {
+      "name": "camera_permission_reason",
+      "value": "视频直播需要使用摄像头"
     }
   ]
 }

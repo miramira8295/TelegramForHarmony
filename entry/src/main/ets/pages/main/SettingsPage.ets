@@ -1,11 +1,17 @@
 import { router, promptAction } from '@kit.ArkUI';
-import { getTdClient } from '../../tdkit/Globals';
+import {
+  addTdAccount, getActiveTdAccountSlot, getTdAccounts, getTdClient,
+  logoutCurrentTdAccount, removeDuplicateTdAccountsForActive,
+  switchTdAccount, updateActiveTdAccountProfile
+} from '../../tdkit/Globals';
+import { TdAccountSummary } from '../../tdkit/AccountRegistry';
 import { ProfileStore } from '../../store/ProfileStore';
 import { AvatarView } from '../chatlist/AvatarView';
 import { TgsStickerView } from '../chat/TgsStickerView';
 import { WebmStickerView } from '../chat/WebmStickerView';
 import { TdObject, TdRequest, TdError } from '../../tdkit/TdTypes';
 import { COLOR_PRIMARY, COLOR_TEXT_PRIMARY, COLOR_TEXT_SECONDARY } from '../../util/theme';
+import { floatingLiveWindow } from '../chat/LiveFloatingWindow';
 
 const CARD_BG: ResourceColor = $r('app.color.surface');
 const CARD_RADIUS: number = 14;
@@ -32,8 +38,10 @@ const SETTINGS: SettingItem[] = [
     page: 'pages/main/DataStoragePage' },
   { icon: 'sys.symbol.folder_fill', bg: '#34AADC', title: '聊天文件夹', subtitle: '将聊天分类到文件夹中',
     page: 'pages/main/ChatFoldersPage' },
-  { icon: 'sys.symbol.computer', bg: '#5AC8FA', title: '设备', subtitle: '管理已连接的设备', page: '' },
-  { icon: 'sys.symbol.battery_100percent', bg: '#FF9500', title: '省电', subtitle: '低电量时降低功耗', page: '' }
+  { icon: 'sys.symbol.computer', bg: '#5AC8FA', title: '设备', subtitle: '管理已连接的设备',
+    page: 'pages/main/ActiveSessionsPage' },
+  { icon: 'sys.symbol.battery_100percent', bg: '#FF9500', title: '省电', subtitle: '低电量时降低功耗',
+    page: 'pages/main/PowerUsagePage' }
 ];
 
 // The settings tab: user header (avatar with camera badge, name, phone·username)
@@ -43,6 +51,8 @@ const SETTINGS: SettingItem[] = [
 export struct SettingsPage {
   @StorageProp('topSafeHeight') topSafe: number = 0;
   @StorageProp('bottomSafeHeight') bottomSafe: number = 0;
+  @StorageLink('tdAccountRegistryEpoch') @Watch('onAccountRegistryEpoch')
+  accountRegistryEpoch: number = 0;
   @State myId: number = 0;
   @State name: string = '';
   @State initials: string = '?';
@@ -52,10 +62,14 @@ export struct SettingsPage {
   @State statusEmojiFormat: string = '';
   @State phone: string = '';
   @State usernames: string[] = [];
+  @State accounts: TdAccountSummary[] = [];
+  @State activeSlotId: string = '';
+  @State switchingSlotId: string = '';
   private store: ProfileStore | null = null;
   private unsub: (() => void) | null = null;
 
   aboutToAppear(): void {
+    this.reloadAccounts();
     const req: TdRequest = { '@type': 'getMe' };
     getTdClient().send(req).then((me: TdObject) => {
       this.myId = (me['id'] as number | undefined) ?? 0;
@@ -89,6 +103,108 @@ export struct SettingsPage {
     this.statusEmojiFormat = s.statusEmojiFormat;
     this.phone = s.phone;
     this.usernames = s.usernames;
+    updateActiveTdAccountProfile(
+      this.myId,
+      this.name,
+      this.phone,
+      this.usernames.length > 0 ? this.usernames[0] : '',
+      this.avatarPath
+    );
+  }
+
+  private onAccountRegistryEpoch(): void {
+    this.reloadAccounts();
+  }
+
+  private reloadAccounts(): void {
+    removeDuplicateTdAccountsForActive();
+    this.accounts = getTdAccounts();
+    this.activeSlotId = getActiveTdAccountSlot();
+  }
+
+  private accountInitials(account: TdAccountSummary): string {
+    const trimmed = account.name.trim();
+    if (trimmed === '') { return '?'; }
+    const parts = trimmed.split(' ').filter((part: string): boolean => part !== '');
+    if (parts.length >= 2) {
+      return `${parts[0].substring(0, 1)}${parts[parts.length - 1].substring(0, 1)}`.toUpperCase();
+    }
+    return trimmed.substring(0, Math.min(2, trimmed.length)).toUpperCase();
+  }
+
+  private accountSubtitle(account: TdAccountSummary): string {
+    if (account.pendingLogin) { return '点击继续登录'; }
+    const parts: string[] = [];
+    if (account.phone !== '') { parts.push(`+${account.phone}`); }
+    if (account.username !== '') { parts.push(`@${account.username}`); }
+    return parts.length > 0 ? parts.join('  ·  ') : 'Telegram 账号';
+  }
+
+  private switchAccount(slotId: string): void {
+    if (this.switchingSlotId !== '' || slotId === this.activeSlotId) { return; }
+    this.switchingSlotId = slotId;
+    floatingLiveWindow.closeForAccountSwitch()
+      .then((): Promise<void> => switchTdAccount(slotId))
+      .catch((caught: Error): void => {
+        console.error(`SettingsPage.switchAccount failed: ${caught.message}`);
+        promptAction.showToast({ message: '账号切换失败，请重试', duration: 1800 });
+        this.switchingSlotId = '';
+      });
+  }
+
+  private addAccount(): void {
+    if (this.switchingSlotId !== '') { return; }
+    this.switchingSlotId = 'new';
+    floatingLiveWindow.closeForAccountSwitch()
+      .then((): Promise<void> => addTdAccount())
+      .catch((caught: Error): void => {
+        console.error(`SettingsPage.addAccount failed: ${caught.message}`);
+        promptAction.showToast({ message: '暂时无法添加账号，请重试', duration: 1800 });
+        this.switchingSlotId = '';
+      });
+  }
+
+  private showMoreMenu(): void {
+    if (this.switchingSlotId !== '') { return; }
+    promptAction.showActionMenu({
+      title: '设置',
+      buttons: [
+        { text: '退出登录', color: '#FF3B30' }
+      ]
+    }).then((result): void => {
+      if (result.index === 0) { this.confirmLogout(); }
+    }).catch((): void => {});
+  }
+
+  private confirmLogout(): void {
+    const hasAnotherAccount = this.accounts.some(
+      (account: TdAccountSummary): boolean =>
+        account.slotId !== this.activeSlotId && !account.pendingLogin && account.userId !== 0
+    );
+    promptAction.showDialog({
+      title: '退出登录',
+      message: hasAnotherAccount
+        ? '确定退出当前账号吗？退出后将自动切换到另一个账号。'
+        : '确定退出当前账号吗？退出后需要重新登录。',
+      buttons: [
+        { text: '取消', color: COLOR_TEXT_SECONDARY as string },
+        { text: '退出', color: '#FF3B30' }
+      ]
+    }).then((result: promptAction.ShowDialogSuccessResponse): void => {
+      if (result.index === 1) { this.performLogout(); }
+    }).catch((): void => {});
+  }
+
+  private performLogout(): void {
+    if (this.switchingSlotId !== '') { return; }
+    this.switchingSlotId = 'logout';
+    floatingLiveWindow.closeForAccountSwitch()
+      .then((): Promise<void> => logoutCurrentTdAccount())
+      .catch((caught: Error): void => {
+        console.error(`SettingsPage.logout failed: ${caught.message}`);
+        promptAction.showToast({ message: '退出登录失败，请重试', duration: 1800 });
+        this.switchingSlotId = '';
+      });
   }
 
   private subtitleLine(): string {
@@ -107,7 +223,16 @@ export struct SettingsPage {
     Row() {
       Blank().layoutWeight(1);
       SymbolGlyph($r('sys.symbol.magnifyingglass')).fontSize(22).fontColor([COLOR_TEXT_SECONDARY]).margin({ right: 20 });
-      SymbolGlyph($r('sys.symbol.more')).fontSize(22).fontColor([COLOR_TEXT_SECONDARY]);
+      Stack({ alignContent: Alignment.Center }) {
+        if (this.switchingSlotId === 'logout') {
+          LoadingProgress().width(21).height(21).color(COLOR_PRIMARY);
+        } else {
+          SymbolGlyph($r('sys.symbol.more')).fontSize(22).fontColor([COLOR_TEXT_SECONDARY]);
+        }
+      }
+      .width(34).height(34)
+      .enabled(this.switchingSlotId === '')
+      .onClick((): void => this.showMoreMenu());
     }
     .width('100%').height(44).padding({ left: 16, right: 16 })
     .alignItems(VerticalAlign.Center);
@@ -137,9 +262,13 @@ export struct SettingsPage {
           .flexShrink(1);
         if (this.statusEmojiPath !== '') {
           if (this.statusEmojiFormat === 'tgs') {
-            TgsStickerView({ tgsPath: this.statusEmojiPath, boxWidth: 24, boxHeight: 24 });
+            TgsStickerView({
+              tgsPath: this.statusEmojiPath, boxWidth: 24, boxHeight: 24, powerCategory: 'emojiStatus'
+            });
           } else if (this.statusEmojiFormat === 'webm') {
-            WebmStickerView({ webmPath: this.statusEmojiPath, boxWidth: 24, boxHeight: 24 });
+            WebmStickerView({
+              webmPath: this.statusEmojiPath, boxWidth: 24, boxHeight: 24, powerCategory: 'emojiStatus'
+            });
           } else {
             Image(`file://${this.statusEmojiPath}`).width(24).height(24).objectFit(ImageFit.Contain);
           }
@@ -151,6 +280,84 @@ export struct SettingsPage {
     }
     .width('100%')
     .padding({ top: 8, bottom: 14 });
+  }
+
+  @Builder
+  accountRow(account: TdAccountSummary) {
+    Row({ space: 12 }) {
+      AvatarView({
+        avatarPath: account.avatarPath,
+        initials: this.accountInitials(account),
+        colorSeed: account.userId !== 0 ? account.userId : account.slotId.length,
+        avatarSize: 40
+      });
+      Column({ space: 2 }) {
+        Text(account.name !== '' ? account.name : 'Telegram 账号')
+          .fontSize(16).fontWeight(FontWeight.Medium).fontColor(COLOR_TEXT_PRIMARY)
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis });
+        Text(this.accountSubtitle(account))
+          .fontSize(12).fontColor(COLOR_TEXT_SECONDARY)
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis });
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1);
+      if (this.switchingSlotId === account.slotId) {
+        LoadingProgress().width(22).height(22).color(COLOR_PRIMARY);
+      } else {
+        SymbolGlyph($r('sys.symbol.chevron_right'))
+          .fontSize(16).fontColor([COLOR_TEXT_SECONDARY]);
+      }
+    }
+    .width('100%')
+    .padding({ left: 14, right: 14, top: 10, bottom: 10 })
+    .alignItems(VerticalAlign.Center)
+    .enabled(this.switchingSlotId === '')
+    .onClick((): void => this.switchAccount(account.slotId));
+  }
+
+  @Builder
+  accountsCard() {
+    Column() {
+      Column() {
+        Text('账号')
+          .width('100%')
+          .fontSize(15).fontWeight(FontWeight.Medium).fontColor('#4CB5E8')
+          .padding({ left: 14, right: 14, top: 12, bottom: 5 });
+        ForEach(this.accounts, (account: TdAccountSummary) => {
+          if (account.slotId !== this.activeSlotId && !account.pendingLogin) {
+            this.accountRow(account);
+            Divider().color($r('app.color.divider')).strokeWidth(0.7).margin({ left: 66 });
+          }
+        }, (account: TdAccountSummary): string => account.slotId);
+        Row({ space: 12 }) {
+          Stack({ alignContent: Alignment.Center }) {
+            SymbolGlyph($r('sys.symbol.plus')).fontSize(19).fontColor([Color.White]);
+          }
+          .width(40).height(40).borderRadius(20).backgroundColor(COLOR_PRIMARY);
+          Column({ space: 2 }) {
+            Text('添加账号').fontSize(16).fontWeight(FontWeight.Medium).fontColor(COLOR_TEXT_PRIMARY);
+            Text('登录另一个 Telegram 账号').fontSize(12).fontColor(COLOR_TEXT_SECONDARY);
+          }
+          .alignItems(HorizontalAlign.Start)
+          .layoutWeight(1);
+          if (this.switchingSlotId === 'new') {
+            LoadingProgress().width(22).height(22).color(COLOR_PRIMARY);
+          } else {
+            SymbolGlyph($r('sys.symbol.chevron_right'))
+              .fontSize(16).fontColor([COLOR_TEXT_SECONDARY]);
+          }
+        }
+        .width('100%')
+        .padding({ left: 14, right: 14, top: 10, bottom: 12 })
+        .alignItems(VerticalAlign.Center)
+        .enabled(this.switchingSlotId === '')
+        .onClick((): void => this.addAccount());
+      }
+      .width('100%')
+      .backgroundColor(CARD_BG)
+      .borderRadius(CARD_RADIUS);
+    }
+    .margin({ left: 12, right: 12, bottom: 10 });
   }
 
   @Builder
@@ -201,6 +408,7 @@ export struct SettingsPage {
       Scroll() {
         Column() {
           this.userHeader();
+          this.accountsCard();
           this.settingsCard();
         }
         .width('100%')

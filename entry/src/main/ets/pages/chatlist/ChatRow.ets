@@ -6,7 +6,7 @@ import {
   setArchived, setInFolder, clearHistory, leaveOrDeleteChat, leaveLabel
 } from '../../store/ChatActions';
 import { getChatStore, getFolderStore } from '../../tdkit/Globals';
-import { KEY_THREE_LINES } from '../../store/AppSettings';
+import { KEY_POWER_ACTIVE, KEY_POWER_PARTICLES, KEY_THREE_LINES } from '../../store/AppSettings';
 import { CHAT_MENU_OPEN } from './ChatListFreeze';
 import { AvatarView } from './AvatarView';
 import { formatTime } from '../../util/formatTime';
@@ -21,6 +21,28 @@ export struct ChatRow {
   @Prop listKey: string;
   // 聊天设置 → 聊天列表视图: the preview line wraps to two lines in 三行 mode.
   @StorageProp(KEY_THREE_LINES) threeLines: boolean = false;
+  @StorageProp(KEY_POWER_ACTIVE) powerSaving: boolean = false;
+  @StorageProp(KEY_POWER_PARTICLES) particlesEnabled: boolean = true;
+  @State livePulseExpanded: boolean = false;
+  private livePulseTimer: number = -1;
+
+  aboutToAppear(): void {
+    if (!this.chat.isLive) { return; }
+    this.livePulseTimer = setInterval((): void => {
+      if (this.powerSaving || !this.particlesEnabled) {
+        this.livePulseExpanded = false;
+        return;
+      }
+      this.livePulseExpanded = !this.livePulseExpanded;
+    }, 760);
+  }
+
+  aboutToDisappear(): void {
+    if (this.livePulseTimer !== -1) {
+      clearInterval(this.livePulseTimer);
+      this.livePulseTimer = -1;
+    }
+  }
 
   private folders(): FolderInfo[] {
     return getFolderStore().getFolders();
@@ -167,7 +189,14 @@ export struct ChatRow {
 
   build() {
     Row({ space: 12 }) {
-      AvatarView({ avatarPath: this.chat.avatarPath, initials: this.chat.initials, colorSeed: this.chat.id, autoDeleteTime: this.chat.autoDeleteTime });
+      AvatarView({
+        avatarPath: this.chat.avatarPath,
+        initials: this.chat.initials,
+        colorSeed: this.chat.id,
+        autoDeleteTime: this.chat.autoDeleteTime,
+        isLive: this.chat.isLive,
+        livePulseExpanded: this.livePulseExpanded
+      });
       Column({ space: 4 }) {
         Row() {
           Text(this.chat.title)

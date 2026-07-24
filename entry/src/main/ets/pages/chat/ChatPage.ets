@@ -24,13 +24,20 @@ import { StreamingVideoPlayer } from './StreamingVideoPlayer';
 import { AlbumGroupDataSource } from './AlbumGroupDataSource';
 import { collapseAlbums, groupIndexOf, AlbumGroup } from '../../util/collapseAlbums';
 import { AvatarView } from '../chatlist/AvatarView';
-import { KEY_SEND_BY_ENTER } from '../../store/AppSettings';
+import {
+  KEY_POWER_ACTIVE, KEY_POWER_CHAT_EFFECTS, KEY_POWER_EMOJI, KEY_POWER_EMOJI_REACTIONS,
+  KEY_POWER_EFFECT_BACKGROUND, KEY_POWER_EFFECT_BLUR, KEY_POWER_EFFECT_MENU,
+  KEY_POWER_EFFECT_REACTION, KEY_POWER_EFFECT_REPLY, KEY_POWER_PARTICLES,
+  KEY_POWER_SMOOTH_TRANSITIONS, KEY_SEND_BY_ENTER, powerAnimationDuration,
+  powerFeatureEnabled, powerGroupAnimationDuration, powerGroupFeatureEnabled
+} from '../../store/AppSettings';
 import { COLOR_PRIMARY, COLOR_TEXT_PRIMARY, COLOR_TEXT_SECONDARY, botButtonBg } from '../../util/theme';
 import { normalizeTelegramLink, bareUsernameOf, inviteLinkOf, chatLinkActionOf } from '../../util/linkNav';
 import { openInviteLink, openChatLinkAction } from '../../util/openTelegramLink';
 import { openUrl } from '../../util/openUrl';
 import { TdObject, TdRequest, TdError } from '../../tdkit/TdTypes';
 import { searchMentions, loadBotCommands, MentionItem, CommandItem } from '../../store/InputSuggestions';
+import { floatingLiveWindow } from './LiveFloatingWindow';
 
 const PINNED_SEG_MAX: number = 5;
 // Scroll-to-bottom FAB: beyond this many groups from the end, reload the newest
@@ -78,6 +85,16 @@ struct ChatPage {
   @State draft: string = '';
   // 聊天设置 → 回车键发送.
   @StorageProp(KEY_SEND_BY_ENTER) sendByEnter: boolean = false;
+  @StorageProp('screenWidthVp') screenW: number = 360;
+  @StorageProp(KEY_POWER_ACTIVE) powerSaving: boolean = false;
+  @StorageProp(KEY_POWER_CHAT_EFFECTS) powerChatEffects: boolean = true;
+  @StorageProp(KEY_POWER_EFFECT_BACKGROUND) powerBackgroundEffect: boolean = false;
+  @StorageProp(KEY_POWER_PARTICLES) powerParticles: boolean = true;
+  @StorageProp(KEY_POWER_EMOJI) powerEmoji: boolean = true;
+  @StorageProp(KEY_POWER_EMOJI_REACTIONS) powerEmojiReactions: boolean = true;
+  @State powerBackgroundPhase: boolean = false;
+  private powerBackgroundTimer: number = -1;
+  private readonly powerParticleIds: number[] = [0, 1, 2, 3, 4, 5, 6, 7];
   @State replyToId: number = 0;      // message being replied to (0 = none)
   @State replyToName: string = '';
   @State replyToText: string = '';
@@ -123,7 +140,16 @@ struct ChatPage {
   @State pinnedCount: number = 0;
   // 正在直播入口条:chat.video_chat.group_call_id > 0 时显示("正在直播").
   @State liveGroupCallId: number = 0;
+  @State liveCallIsActive: boolean = false;
+  @State liveCallIsRtmp: boolean = false;
+  @State liveParticipantCount: number = 0;
+  @State livePulseExpanded: boolean = false;
   private unsubVideoChat: (() => void) | null = null;
+  private unsubGroupCall: (() => void) | null = null;
+  private livePulseTimer: number = -1;
+  private liveStateRefreshTimer: number = -1;
+  private liveChatRefreshInFlight: boolean = false;
+  private liveGroupRefreshInFlight: boolean = false;
   private chatId: number = 0;
   // >0: comment-thread view over the linked discussion group (see onCommentTap)
   private threadRootId: number = 0;
@@ -249,9 +275,37 @@ struct ChatPage {
     this.unsubVideoChat = getTdClient().onUpdate('updateChatVideoChat', (u: TdObject) => {
       if ((u['chat_id'] as number | undefined) === this.chatId) {
         const vc = u['video_chat'] as TdObject | undefined;
-        this.liveGroupCallId = vc !== undefined ? ((vc['group_call_id'] as number | undefined) ?? 0) : 0;
+        this.setLiveGroupCallId(vc !== undefined ? ((vc['group_call_id'] as number | undefined) ?? 0) : 0);
       }
     });
+    this.unsubGroupCall = getTdClient().onUpdate('updateGroupCall', (u: TdObject) => {
+      const groupCall = u['group_call'] as TdObject | undefined;
+      if (groupCall !== undefined &&
+        ((groupCall['id'] as number | undefined) ?? 0) === this.liveGroupCallId) {
+        this.applyLiveGroupCall(groupCall);
+      }
+    });
+    this.livePulseTimer = setInterval((): void => {
+      if (!this.liveCallIsActive || !powerFeatureEnabled(KEY_POWER_PARTICLES)) {
+        this.livePulseExpanded = false;
+        return;
+      }
+      this.livePulseExpanded = !this.livePulseExpanded;
+    }, 780);
+    this.powerBackgroundTimer = setInterval((): void => {
+      if (powerGroupFeatureEnabled(KEY_POWER_CHAT_EFFECTS, KEY_POWER_EFFECT_BACKGROUND) ||
+        powerFeatureEnabled(KEY_POWER_PARTICLES)) {
+        this.powerBackgroundPhase = !this.powerBackgroundPhase;
+      } else {
+        this.powerBackgroundPhase = false;
+      }
+    }, 4200);
+    // Updates remain the fast path. Polling is a small safety net for devices
+    // that resume this cached page after an update was delivered while its
+    // subscriptions were inactive.
+    this.liveStateRefreshTimer = setInterval((): void => {
+      this.refreshVideoChat();
+    }, 2000);
     const store = new MessageStore(getTdClient(), getUserStore(), this.chatId, this.threadRootId);
     this.store = store;
     this.unsubMsg = store.subscribe((list: MessageEntry[]) => {
@@ -472,29 +526,107 @@ struct ChatPage {
     if (this.unsubHeaderTitle !== null) { this.unsubHeaderTitle(); this.unsubHeaderTitle = null; }
     if (this.unsubReplyKb !== null) { this.unsubReplyKb(); this.unsubReplyKb = null; }
     if (this.unsubVideoChat !== null) { this.unsubVideoChat(); this.unsubVideoChat = null; }
+    if (this.unsubGroupCall !== null) { this.unsubGroupCall(); this.unsubGroupCall = null; }
+    if (this.livePulseTimer !== -1) { clearInterval(this.livePulseTimer); this.livePulseTimer = -1; }
+    if (this.powerBackgroundTimer !== -1) {
+      clearInterval(this.powerBackgroundTimer);
+      this.powerBackgroundTimer = -1;
+    }
+    if (this.liveStateRefreshTimer !== -1) {
+      clearInterval(this.liveStateRefreshTimer);
+      this.liveStateRefreshTimer = -1;
+    }
     if (this.store !== null) { this.store.close(); this.store = null; }
   }
 
   // 拉取当前会话的 video_chat 字段,决定"正在直播"入口条是否显示;
   // 后续变化由 updateChatVideoChat 增量更新(见 aboutToAppear).
   private refreshVideoChat(): void {
+    if (this.liveChatRefreshInFlight) { return; }
+    this.liveChatRefreshInFlight = true;
     const req: TdRequest = { '@type': 'getChat' };
     req['chat_id'] = this.chatId;
     getTdClient().send(req).then((chat: TdObject) => {
       const vc = chat['video_chat'] as TdObject | undefined;
-      this.liveGroupCallId = vc !== undefined ? ((vc['group_call_id'] as number | undefined) ?? 0) : 0;
+      this.setLiveGroupCallId(vc !== undefined ? ((vc['group_call_id'] as number | undefined) ?? 0) : 0);
+      this.liveChatRefreshInFlight = false;
     }).catch((e: TdError) => {
+      this.liveChatRefreshInFlight = false;
       console.error(`ChatPage.refreshVideoChat getChat failed: ${e.message}`);
     });
   }
 
-  // "正在直播" 入口条点击:跳转到直播观看页,携带 groupCallId.
-  private onLiveStreamTap(): void {
-    if (this.liveGroupCallId <= 0) {
+  private setLiveGroupCallId(groupCallId: number): void {
+    const changed = groupCallId !== this.liveGroupCallId;
+    if (changed) {
+      this.liveGroupCallId = groupCallId;
+      this.liveCallIsActive = false;
+      this.liveCallIsRtmp = false;
+      this.liveParticipantCount = 0;
+      this.livePulseExpanded = false;
+    }
+    if (groupCallId <= 0) { return; }
+    // Do not short-circuit an unchanged id: a group call can transition from
+    // scheduled/inactive to live, or from live to ended, while retaining it.
+    if (this.liveGroupRefreshInFlight) { return; }
+    this.liveGroupRefreshInFlight = true;
+    const request: TdRequest = { '@type': 'getGroupCall' };
+    request['group_call_id'] = groupCallId;
+    getTdClient().send(request).then((groupCall: TdObject): void => {
+      this.liveGroupRefreshInFlight = false;
+      if (this.liveGroupCallId === groupCallId) { this.applyLiveGroupCall(groupCall); }
+    }).catch((error: TdError): void => {
+      this.liveGroupRefreshInFlight = false;
+      console.error(`ChatPage.getGroupCall failed: ${error.message}`);
+    });
+  }
+
+  private applyLiveGroupCall(groupCall: TdObject): void {
+    this.liveCallIsActive = (groupCall['is_active'] as boolean | undefined) ?? false;
+    this.liveCallIsRtmp = (groupCall['is_rtmp_stream'] as boolean | undefined) ?? false;
+    this.liveParticipantCount = (groupCall['participant_count'] as number | undefined) ?? 0;
+    if (!this.liveCallIsActive) { this.livePulseExpanded = false; }
+  }
+
+  private enterLiveStream(groupCallId: number): void {
+    if (groupCallId <= 0 || groupCallId !== this.liveGroupCallId || !this.liveCallIsActive) {
+      promptAction.showToast({ message: '直播已经结束', duration: 1500 });
       return;
     }
-    const params: Record<string, Object> = { 'groupCallId': this.liveGroupCallId };
-    router.pushUrl({ url: 'pages/chat/LiveStreamViewerPage', params: params });
+    const params: Record<string, Object> = { 'groupCallId': groupCallId, 'chatId': this.chatId };
+    floatingLiveWindow.prepareForOpeningFullPage().finally((): void => {
+      router.pushUrl({
+        url: this.liveCallIsRtmp
+          ? 'pages/chat/RtmpLiveStreamViewerPage' : 'pages/chat/LiveStreamViewerPage',
+        params: params
+      });
+    });
+  }
+
+  // All live entry points confirm before joining. The viewer itself joins
+  // muted, so the dialog can state the privacy behavior precisely.
+  private onLiveStreamTap(): void {
+    if (this.liveGroupCallId <= 0 || !this.liveCallIsActive) {
+      promptAction.showToast({ message: '直播已经结束', duration: 1500 });
+      return;
+    }
+    const groupCallId = this.liveGroupCallId;
+    const onlineText = this.liveParticipantCount > 0 ? `当前有 ${this.liveParticipantCount} 人在线。` : '';
+    const privacyText = this.liveCallIsRtmp
+      ? '这是单向直播，进入后只能观看和参与直播互动，不会打开麦克风或摄像头。'
+      : '进入后默认静音播放，不会自动打开麦克风；如有发言权限，可在直播间内开麦。';
+    promptAction.showDialog({
+      title: '进入直播？',
+      message: `${onlineText}${privacyText}`,
+      buttons: [
+        { text: '取消', color: '#8E8E93' },
+        { text: '进入直播', color: '#FF405C' }
+      ]
+    }).then((result): void => {
+      if (result.index === 1) { this.enterLiveStream(groupCallId); }
+    }).catch((error: Object): void => {
+      console.error(`ChatPage live confirmation failed: ${JSON.stringify(error)}`);
+    });
   }
 
   // True-bottom detection off the scroller's end edge, not the visible index
@@ -508,18 +640,32 @@ struct ChatPage {
     }
   }
 
+  private chatEffectDuration(key: string, duration: number): number {
+    if (!powerFeatureEnabled(KEY_POWER_SMOOTH_TRANSITIONS)) {
+      return 0;
+    }
+    return powerGroupAnimationDuration(KEY_POWER_CHAT_EFFECTS, key, duration);
+  }
+
+  private reactionEffectDuration(duration: number): number {
+    if (!powerGroupFeatureEnabled(KEY_POWER_EMOJI, KEY_POWER_EMOJI_REACTIONS)) {
+      return 0;
+    }
+    return this.chatEffectDuration(KEY_POWER_EFFECT_REACTION, duration);
+  }
+
   // Open/close wrapped in animateTo so the viewer's own transition remains
   // smooth without moving/re-parenting the chat thumbnail Image node.
   private openViewer(messageId: number): void {
     this.viewerIgnoreTapUntilMs = 0;
     this.resetViewerPhotoZoom(false);
-    animateTo({ duration: 300, curve: Curve.Friction }, () => {
+    animateTo({ duration: this.chatEffectDuration(KEY_POWER_EFFECT_BLUR, 300), curve: Curve.Friction }, () => {
       this.onMediaTap(messageId);
     });
   }
 
   private closeViewer(): void {
-    animateTo({ duration: 300, curve: Curve.Friction }, () => {
+    animateTo({ duration: this.chatEffectDuration(KEY_POWER_EFFECT_BLUR, 300), curve: Curve.Friction }, () => {
       this.viewerPhotoScale = VIEWER_MIN_SCALE;
       this.viewerPhotoOffsetX = 0;
       this.viewerPhotoOffsetY = 0;
@@ -982,12 +1128,16 @@ struct ChatPage {
       this.flashAlpha = 0;
       return;
     }
-    animateTo({ duration: 320, curve: Curve.EaseInOut }, () => { this.flashAlpha = 1; });
+    animateTo({
+      duration: this.chatEffectDuration(KEY_POWER_EFFECT_REPLY, 320), curve: Curve.EaseInOut
+    }, () => { this.flashAlpha = 1; });
     setTimeout(() => {
       if (seq !== this.flashSeq) {
         return;
       }
-      animateTo({ duration: 320, curve: Curve.EaseInOut }, () => { this.flashAlpha = 0; });
+      animateTo({
+        duration: this.chatEffectDuration(KEY_POWER_EFFECT_REPLY, 320), curve: Curve.EaseInOut
+      }, () => { this.flashAlpha = 0; });
       setTimeout(() => { this.runBlink(seq, remaining - 1); }, 340);
     }, 340);
   }
@@ -1123,7 +1273,9 @@ struct ChatPage {
   private resetViewerPhotoZoom(animated: boolean): void {
     this.viewerPinchStartScale = VIEWER_MIN_SCALE;
     if (animated) {
-      animateTo({ duration: 180, curve: Curve.EaseOut }, () => {
+      animateTo({
+        duration: this.chatEffectDuration(KEY_POWER_EFFECT_BLUR, 180), curve: Curve.EaseOut
+      }, () => {
         this.viewerPhotoScale = VIEWER_MIN_SCALE;
         this.viewerPhotoOffsetX = 0;
         this.viewerPhotoOffsetY = 0;
@@ -1211,7 +1363,9 @@ struct ChatPage {
       py = event.fingerList[0].localY - this.viewerAreaH / 2;
     }
     this.viewerPinchStartScale = VIEWER_DOUBLE_TAP_SCALE;
-    animateTo({ duration: 200, curve: Curve.EaseOut }, () => {
+    animateTo({
+      duration: this.chatEffectDuration(KEY_POWER_EFFECT_BLUR, 200), curve: Curve.EaseOut
+    }, () => {
       this.viewerPhotoScale = VIEWER_DOUBLE_TAP_SCALE;
       this.viewerPhotoOffsetX = px * (1 - VIEWER_DOUBLE_TAP_SCALE);
       this.viewerPhotoOffsetY = py * (1 - VIEWER_DOUBLE_TAP_SCALE);
@@ -1790,7 +1944,9 @@ struct ChatPage {
     }
     const seq = ++this.panelReadySeq;
     if (show) {
-      animateTo({ duration: 220, curve: Curve.EaseOut }, () => {
+      animateTo({
+        duration: this.chatEffectDuration(KEY_POWER_EFFECT_MENU, 220), curve: Curve.EaseOut
+      }, () => {
         this.showEmojiPanel = true;
       });
       setTimeout(() => {
@@ -1800,7 +1956,9 @@ struct ChatPage {
       }, 240);
     } else {
       this.panelContentReady = false; // unmount the heavy content first
-      animateTo({ duration: 220, curve: Curve.EaseOut }, () => {
+      animateTo({
+        duration: this.chatEffectDuration(KEY_POWER_EFFECT_MENU, 220), curve: Curve.EaseOut
+      }, () => {
         this.showEmojiPanel = false;
       });
     }
@@ -2224,10 +2382,14 @@ struct ChatPage {
             .constraintSize({ maxWidth: '88%' });
           if (this.headerEmojiPath !== '') {
             if (this.headerEmojiFormat === 'tgs') {
-              TgsStickerView({ tgsPath: this.headerEmojiPath, boxWidth: 18, boxHeight: 18 })
+              TgsStickerView({
+                tgsPath: this.headerEmojiPath, boxWidth: 18, boxHeight: 18, powerCategory: 'emojiStatus'
+              })
                 .margin({ left: 4 });
             } else if (this.headerEmojiFormat === 'webm') {
-              WebmStickerView({ webmPath: this.headerEmojiPath, boxWidth: 18, boxHeight: 18 })
+              WebmStickerView({
+                webmPath: this.headerEmojiPath, boxWidth: 18, boxHeight: 18, powerCategory: 'emojiStatus'
+              })
                 .margin({ left: 4 });
             } else {
               Image(`file://${this.headerEmojiPath}`).width(18).height(18).objectFit(ImageFit.Contain)
@@ -2322,7 +2484,12 @@ struct ChatPage {
     .width('100%').padding({ left: 16, right: 16, top: 7, bottom: 7 })
     .backgroundColor($r('app.color.surface'))
     .border({ width: { top: 0.7 }, color: $r('app.color.divider') })
-    .alignItems(VerticalAlign.Center);
+    .alignItems(VerticalAlign.Center)
+    .transition(
+      TransitionEffect.translate({ y: 12 })
+        .combine(TransitionEffect.OPACITY)
+        .animation({ duration: this.chatEffectDuration(KEY_POWER_EFFECT_REPLY, 180), curve: Curve.EaseOut })
+    );
   }
 
   // Full emoji reaction picker (opened from the long-press menu chevron): a
@@ -2349,7 +2516,12 @@ struct ChatPage {
       .borderRadius({ topLeft: 18, topRight: 18 });
     }
     .width('100%').height('100%')
-    .backgroundColor('#00000066');
+    .backgroundColor('#00000066')
+    .transition(
+      TransitionEffect.translate({ y: 24 })
+        .combine(TransitionEffect.OPACITY)
+        .animation({ duration: this.reactionEffectDuration(220), curve: Curve.EaseOut })
+    );
   }
 
   // The reply keyboard sits below the input bar, so while it's up IT carries the
@@ -2466,7 +2638,7 @@ struct ChatPage {
             .width(44).height(44).backgroundColor(COLOR_PRIMARY).borderRadius(22)
             .transition(TransitionEffect.OPACITY
               .combine(TransitionEffect.scale({ x: 0.3, y: 0.3 }))
-              .animation({ duration: 200, curve: Curve.EaseOut }))
+              .animation({ duration: powerAnimationDuration(KEY_POWER_SMOOTH_TRANSITIONS, 200), curve: Curve.EaseOut }))
             .onClick(() => { this.startRecording(); });
           } else {
             Button() {
@@ -2476,7 +2648,7 @@ struct ChatPage {
             .transition(TransitionEffect.OPACITY
               .combine(TransitionEffect.scale({ x: 0.3, y: 0.3 }))
               .combine(TransitionEffect.rotate({ angle: -45 }))
-              .animation({ duration: 200, curve: Curve.EaseOut }))
+              .animation({ duration: powerAnimationDuration(KEY_POWER_SMOOTH_TRANSITIONS, 200), curve: Curve.EaseOut }))
             .onClick(() => { this.doSend(); });
           }
         }.width(44).height(44);
@@ -2551,15 +2723,41 @@ struct ChatPage {
   // 会话存在活跃 video chat(chat.video_chat.group_call_id > 0)时的"正在直播"入口条.
   @Builder
   liveStreamBanner() {
-    Row({ space: 8 }) {
-      SymbolGlyph($r('sys.symbol.play_fill')).fontSize(16).fontColor([Color.Red]);
-      Text('正在直播').fontSize(14).fontColor(COLOR_TEXT_PRIMARY).fontWeight(FontWeight.Medium)
-        .layoutWeight(1);
-      SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([COLOR_TEXT_SECONDARY]);
+    Row() {
+      Column()
+        .width(3).height(34).backgroundColor('#FF405C').borderRadius(1.5)
+        .opacity(this.livePulseExpanded ? 1 : 0.62)
+        .scale({ x: 1, y: this.livePulseExpanded ? 1 : 0.82 })
+        .animation({ duration: powerAnimationDuration(KEY_POWER_PARTICLES, 720), curve: Curve.EaseInOut });
+      Column() {
+        Row({ space: 6 }) {
+          Text('正在直播').fontSize(12).fontColor('#FF405C').fontWeight(FontWeight.Medium);
+          if (this.liveCallIsRtmp) {
+            Text('单向').fontSize(9).fontColor(Color.White).fontWeight(FontWeight.Bold)
+              .padding({ left: 5, right: 5, top: 2, bottom: 2 })
+              .backgroundColor('#FF405C').borderRadius(6);
+          }
+          Circle({ width: 6, height: 6 }).fill('#FF405C')
+            .opacity(this.livePulseExpanded ? 1 : 0.45);
+        }
+        Text(this.liveParticipantCount > 0 ? `${this.liveParticipantCount} 人在线` : '直播进行中')
+          .fontSize(13).fontColor(COLOR_TEXT_PRIMARY)
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis });
+      }
+      .alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 8 });
+      Button('进入直播')
+        .fontSize(12).fontColor(Color.White).fontWeight(FontWeight.Medium)
+        .height(30).padding({ left: 12, right: 12 })
+        .backgroundColor('#FF405C').borderRadius(15)
+        .onClick((): void => { this.onLiveStreamTap(); });
     }
-    .width('100%').padding({ left: 12, right: 16, top: 8, bottom: 8 })
-    .backgroundColor($r('app.color.surface')).alignItems(VerticalAlign.Center)
-    .onClick(() => { this.onLiveStreamTap(); });
+    .width('100%').padding({ left: 12, right: 12, top: 6, bottom: 6 })
+    .backgroundColor($r('app.color.surface'))
+    .alignItems(VerticalAlign.Center)
+    .border({ width: { top: 0.5 }, color: '#183E3E40' })
+    .transition(TransitionEffect.OPACITY
+      .combine(TransitionEffect.translate({ y: -6 }))
+      .animation({ duration: powerAnimationDuration(KEY_POWER_SMOOTH_TRANSITIONS, 240), curve: Curve.EaseOut }));
   }
 
   @Builder
@@ -2595,8 +2793,56 @@ struct ChatPage {
     .alignItems(HorizontalAlign.End);
   }
 
+  private backgroundEffectsEnabled(): boolean {
+    return !this.powerSaving && this.powerChatEffects && this.powerBackgroundEffect;
+  }
+
+  private particlesEnabled(): boolean {
+    return !this.powerSaving && this.powerParticles;
+  }
+
+  @Builder
+  chatPowerBackground() {
+    Stack() {
+      Column().width('100%').height('100%').backgroundColor($r('app.color.chat_bg'));
+      if (this.backgroundEffectsEnabled()) {
+        Circle({ width: 250, height: 250 })
+          .fill('#142A9FE8')
+          .position({ x: this.powerBackgroundPhase ? this.screenW - 150 : -90, y: 110 })
+          .opacity(this.powerBackgroundPhase ? 0.42 : 0.18)
+          .animation({
+            duration: this.chatEffectDuration(KEY_POWER_EFFECT_BACKGROUND, 4200),
+            curve: Curve.EaseInOut
+          });
+        Circle({ width: 210, height: 210 })
+          .fill('#1056C76F')
+          .position({ x: this.powerBackgroundPhase ? -70 : this.screenW - 130, y: 500 })
+          .opacity(this.powerBackgroundPhase ? 0.16 : 0.36)
+          .animation({
+            duration: this.chatEffectDuration(KEY_POWER_EFFECT_BACKGROUND, 4200),
+            curve: Curve.EaseInOut
+          });
+      }
+      if (this.particlesEnabled()) {
+        ForEach(this.powerParticleIds, (id: number) => {
+          Circle({ width: 3 + (id % 3), height: 3 + (id % 3) })
+            .fill(id % 2 === 0 ? '#462A9FE8' : '#3D56C76F')
+            .position({
+              x: 22 + ((id * 67 + (this.powerBackgroundPhase ? 34 : 0)) % Math.max(40, this.screenW - 44)),
+              y: 120 + ((id * 151 + (this.powerBackgroundPhase ? 90 : 0)) % 650)
+            })
+            .opacity(this.powerBackgroundPhase ? 0.2 + (id % 3) * 0.12 : 0.48 - (id % 3) * 0.08)
+            .animation({ duration: powerAnimationDuration(KEY_POWER_PARTICLES, 4200), curve: Curve.EaseInOut });
+        }, (id: number): string => `power_particle_${id}`);
+      }
+    }
+    .width('100%').height('100%')
+    .hitTestBehavior(HitTestMode.None);
+  }
+
   build() {
     Stack() {
+      this.chatPowerBackground();
       Column() {
         if (this.selecting) {
           this.selectionHeader();
@@ -2605,11 +2851,11 @@ struct ChatPage {
         } else {
           this.header();
         }
-        if (this.liveGroupCallId > 0) {
-          this.liveStreamBanner();
-        }
         if (this.pinnedPreview !== '') {
           this.pinnedBanner();
+        }
+        if (this.liveGroupCallId > 0 && this.liveCallIsActive) {
+          this.liveStreamBanner();
         }
         Stack() {
         List({ scroller: this.scroller }) {
@@ -2663,6 +2909,9 @@ struct ChatPage {
                 onFileTap: (id: number): void => { this.onFileTap(id); },
                 onFileSave: (id: number): void => { this.onFileSave(id); },
                 onVoiceTap: (id: number): void => { this.onVoiceTap(id); },
+                onAutoplayVideoNeedDownload: (id: number): void => {
+                  this.store?.requestVideoDownload(id);
+                },
                 onSetReaction: (id: number, emoji: string, chosen: boolean): void => { this.toggleReaction(id, emoji, chosen); },
                 onReplyTo: (id: number): void => { this.startReply(id); },
                 onCopyText: (id: number): void => { this.copyMessageText(id); },
@@ -2671,7 +2920,7 @@ struct ChatPage {
                 onReportMsg: (id: number): void => { promptAction.showToast({ message: '举报功能开发中', duration: 1500 }); },
                 onSelectMsg: (id: number): void => { this.enterSelect(id); },
                 onOpenReactions: (id: number): void => { this.openReactionSheet(id); },
-                liveGroupCallId: this.liveGroupCallId,
+                liveGroupCallId: this.liveCallIsActive ? this.liveGroupCallId : 0,
                 // Reuses the same navigation as the "正在直播" banner (onLiveStreamTap
                 // already reads this.liveGroupCallId and no-ops if it's gone stale).
                 onLiveStreamTap: (): void => { this.onLiveStreamTap(); },
@@ -2766,7 +3015,7 @@ struct ChatPage {
           }
           .width('100%').justifyContent(FlexAlign.Center).margin({ top: 8 })
           .opacity(this.floatDateShown ? 1 : 0)
-          .animation({ duration: 250, curve: Curve.EaseOut })
+          .animation({ duration: powerAnimationDuration(KEY_POWER_SMOOTH_TRANSITIONS, 250), curve: Curve.EaseOut })
           .hitTestBehavior(HitTestMode.None);
         }
         }
@@ -2820,7 +3069,7 @@ struct ChatPage {
       }
       .width('100%').height('100%')
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
-      .backgroundColor($r('app.color.chat_bg'));
+      .backgroundColor(Color.Transparent);
 
       // Emoji/sticker panel OVERLAYS the chat (not in the layout flow): the
       // message list keeps its height, so its scrollbar/FAB stay put, and the
@@ -2860,7 +3109,7 @@ struct ChatPage {
           // Hero-style: grow out of the smiley button, shrink back into it.
           .transition(TransitionEffect.scale({ x: 0.05, y: 0.05, centerX: this.emojiBtnCx, centerY: '100%' })
             .combine(TransitionEffect.OPACITY)
-            .animation({ duration: 220, curve: Curve.EaseOut }));
+            .animation({ duration: this.chatEffectDuration(KEY_POWER_EFFECT_MENU, 220), curve: Curve.EaseOut }));
         }
         .width('100%').height('100%')
         .justifyContent(FlexAlign.End)
@@ -2950,7 +3199,7 @@ struct ChatPage {
         .transition(
           TransitionEffect.scale({ x: 0.25, y: 0.25, centerX: this.tapX, centerY: this.tapY })
             .combine(TransitionEffect.OPACITY)
-            .animation({ duration: 300, curve: Curve.Friction })
+            .animation({ duration: this.chatEffectDuration(KEY_POWER_EFFECT_BLUR, 300), curve: Curve.Friction })
         )
       }
     }.width('100%').height('100%');

@@ -1,6 +1,7 @@
 import { AVATAR_PALETTE, AVATAR_SIZE, COLOR_PRIMARY } from '../../util/theme';
 import { formatTTL } from '../../util/formatTTL';
 import { AvLoopVideo } from '../common/AvLoopVideo';
+import { KEY_POWER_ACTIVE, KEY_POWER_AUTOPLAY_VIDEO } from '../../store/AppSettings';
 
 @Component
 export struct AvatarView {
@@ -8,14 +9,18 @@ export struct AvatarView {
   @Prop initials: string;
   @Prop colorSeed: number;
   @Prop autoDeleteTime: number = 0;
+  @Prop isLive: boolean = false;
+  @Prop livePulseExpanded: boolean = false;
   // Animated profile photo (MPEG4 loop). Only profile pages pass this —
   // list rows stay static (one looping player per row would be too heavy).
   @Prop animPath: string = '';
+  @StorageProp(KEY_POWER_ACTIVE) powerSaving: boolean = false;
+  @StorageProp(KEY_POWER_AUTOPLAY_VIDEO) autoplayVideo: boolean = true;
   avatarSize: number = AVATAR_SIZE;
 
   @Builder
   base() {
-    if (this.animPath !== '') {
+    if (this.animPath !== '' && this.autoplayVideo && !this.powerSaving) {
       // Animated avatars are H.264 MP4 — the system AVPlayer loops them with
       // hardware decode (far lighter than ijkplayer's software path).
       Column() {
@@ -49,7 +54,7 @@ export struct AvatarView {
   build() {
     Stack({ alignContent: Alignment.BottomEnd }) {
       this.base();
-      if (this.autoDeleteTime > 0) {
+      if (this.autoDeleteTime > 0 && !this.isLive) {
         Text(formatTTL(this.autoDeleteTime))
           .fontSize(9).fontColor(Color.White).fontWeight(FontWeight.Medium)
           .textAlign(TextAlign.Center)
@@ -58,6 +63,32 @@ export struct AvatarView {
           .border({ width: 1.5, color: Color.White })
           .constraintSize({ minWidth: 16 })
           .padding({ left: 3, right: 3, top: 1, bottom: 1 });
+      }
+      if (this.isLive) {
+        Stack({ alignContent: Alignment.Center }) {
+          Circle({ width: 22, height: 22 })
+            .fill('#442AABEE')
+            .opacity(this.livePulseExpanded ? 0.18 : 0.52)
+            .scale({
+              x: this.livePulseExpanded ? 1.12 : 0.92,
+              y: this.livePulseExpanded ? 1.12 : 0.92
+            });
+          Circle({ width: 18, height: 18 })
+            .fill('#F8FCFF')
+            .shadow({ radius: 3, color: '#292A88C9', offsetX: 0, offsetY: 1 })
+            .scale({
+              x: this.livePulseExpanded ? 1.03 : 0.98,
+              y: this.livePulseExpanded ? 1.03 : 0.98
+            });
+          Row({ space: 1.5 }) {
+            Circle({ width: 2.5, height: 2.5 }).fill('#249FE8');
+            Rect({ width: 2.5, height: 8, radius: 1.25 }).fill('#249FE8');
+            Rect({ width: 2.5, height: 8, radius: 1.25 }).fill('#249FE8');
+            Circle({ width: 2.5, height: 2.5 }).fill('#249FE8');
+          }.alignItems(VerticalAlign.Center);
+        }
+        .width(22).height(22)
+        .translate({ x: 1, y: 1 });
       }
     }
     .width(this.avatarSize).height(this.avatarSize);

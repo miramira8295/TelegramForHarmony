@@ -1,6 +1,6 @@
 import { TdClient } from '../tdkit/TdClient';
 import { TdObject } from '../tdkit/TdTypes';
-import { LiveStreamState, emptyLiveStreamState } from '../tdkit/GroupCallTypes';
+import { GroupCallStreamInfo, LiveStreamState, emptyLiveStreamState } from '../tdkit/GroupCallTypes';
 
 export class LiveStreamStore {
   private client: TdClient;
@@ -26,6 +26,39 @@ export class LiveStreamStore {
     };
   }
 
+  setStreams(streams: GroupCallStreamInfo[]): void {
+    this.state = {
+      title: this.state.title,
+      isActive: this.state.isActive,
+      isRtmpStream: this.state.isRtmpStream,
+      isJoined: true,
+      needRejoin: false,
+      canSendMessages: this.state.canSendMessages,
+      areMessagesAllowed: this.state.areMessagesAllowed,
+      participantCount: this.state.participantCount,
+      streams,
+      error: ''
+    };
+    this.emit();
+  }
+
+  applyGroupCall(groupCall: TdObject): void {
+    if (((groupCall['id'] as number | undefined) ?? 0) !== this.groupCallId) { return; }
+    this.state = {
+      title: (groupCall['title'] as string | undefined) ?? this.state.title,
+      isActive: (groupCall['is_active'] as boolean | undefined) ?? false,
+      isRtmpStream: (groupCall['is_rtmp_stream'] as boolean | undefined) ?? this.state.isRtmpStream,
+      isJoined: (groupCall['is_joined'] as boolean | undefined) ?? false,
+      needRejoin: (groupCall['need_rejoin'] as boolean | undefined) ?? false,
+      canSendMessages: (groupCall['can_send_messages'] as boolean | undefined) ?? false,
+      areMessagesAllowed: (groupCall['are_messages_allowed'] as boolean | undefined) ?? false,
+      participantCount: (groupCall['participant_count'] as number | undefined) ?? 0,
+      streams: this.state.streams,
+      error: ''
+    };
+    this.emit();
+  }
+
   dispose(): void {
     if (this.unsub !== null) { this.unsub(); this.unsub = null; }
     this.listeners = [];
@@ -36,14 +69,10 @@ export class LiveStreamStore {
     if (gc === undefined || (gc['id'] as number | undefined) !== this.groupCallId) {
       return;
     }
-    this.state = {
-      isActive: (gc['is_active'] as boolean | undefined) ?? false,
-      isJoined: (gc['is_joined'] as boolean | undefined) ?? false,
-      needRejoin: (gc['need_rejoin'] as boolean | undefined) ?? false,
-      participantCount: (gc['participant_count'] as number | undefined) ?? 0,
-      streams: this.state.streams,
-      error: ''
-    };
+    this.applyGroupCall(gc);
+  }
+
+  private emit(): void {
     for (const l of this.listeners) { l(this.state); }
   }
 }

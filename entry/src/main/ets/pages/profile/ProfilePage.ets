@@ -579,9 +579,13 @@ struct ProfilePage {
   @Builder
   statusEmoji() {
     if (this.statusEmojiFormat === 'tgs') {
-      TgsStickerView({ tgsPath: this.statusEmojiPath, boxWidth: 24, boxHeight: 24 });
+      TgsStickerView({
+        tgsPath: this.statusEmojiPath, boxWidth: 24, boxHeight: 24, powerCategory: 'emojiStatus'
+      });
     } else if (this.statusEmojiFormat === 'webm') {
-      WebmStickerView({ webmPath: this.statusEmojiPath, boxWidth: 24, boxHeight: 24 });
+      WebmStickerView({
+        webmPath: this.statusEmojiPath, boxWidth: 24, boxHeight: 24, powerCategory: 'emojiStatus'
+      });
     } else {
       Image(`file://${this.statusEmojiPath}`).width(24).height(24).objectFit(ImageFit.Contain);
     }

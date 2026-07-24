@@ -61,7 +61,7 @@ export struct ChatListView {
           ListItem() {
             ChatRow({ chat: item, nowSec: this.nowSec, listKey: this.listKey });
           }
-        }, (item: ChatEntry, index: number) => `${item.id}_${index}_${item.unreadCount}_${item.isMuted}_${item.lastMessageDate}_${item.lastMessageText}_${item.lastSenderName}_${item.avatarPath}_${item.title}_${item.isMarkedUnread}`);
+        }, (item: ChatEntry, index: number) => `${item.id}_${index}_${item.unreadCount}_${item.isMuted}_${item.lastMessageDate}_${item.lastMessageText}_${item.lastSenderName}_${item.avatarPath}_${item.title}_${item.isMarkedUnread}_${item.liveGroupCallId}_${item.isLive}_${item.isRtmpLive}`);
       }
       .layoutWeight(1).width('100%')
       .contentEndOffset(this.bottomSafe + 88)

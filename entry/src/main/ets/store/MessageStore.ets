@@ -6,6 +6,7 @@ import { ReplyKeyboard, parseReplyKeyboard } from './ReplyKeyboard';
 import { formatUserStatus } from '../util/formatUserStatus';
 import { formatPreview } from '../util/formatPreview';
 import { formatMemberCount } from '../util/formatMemberCount';
+import { KEY_POWER_AUTOPLAY_GIF, powerFeatureEnabled } from './AppSettings';
 
 const PAGE: number = 30;
 const PHOTO_PRIORITY: number = 1;
@@ -80,16 +81,20 @@ export class MessageStore {
   // (null when that newest markup is replyMarkupRemoveKeyboard).
   private kbMarkupMsgId: number = 0;
   private kbFromHistory: ReplyKeyboard | null = null;
+  private chatOpened: boolean = false;
 
   // >0: this store is scoped to one message thread (channel-post comments) —
   // history comes from getMessageThreadHistory and sends target the thread.
   private threadRootId: number = 0;
+  private historyPageSize: number = PAGE;
 
-  constructor(client: TdClient, users: UserStore, chatId: number, threadRootId: number = 0) {
+  constructor(client: TdClient, users: UserStore, chatId: number,
+    threadRootId: number = 0, historyPageSize: number = PAGE) {
     this.client = client;
     this.users = users;
     this.chatId = chatId;
     this.threadRootId = threadRootId;
+    this.historyPageSize = Math.max(1, Math.min(100, historyPageSize));
   }
 
   // getChatHistory, or getMessageThreadHistory when scoped to a comment thread
@@ -99,7 +104,7 @@ export class MessageStore {
     req['chat_id'] = this.chatId;
     req['from_message_id'] = fromId;
     req['offset'] = offset;
-    req['limit'] = PAGE;
+    req['limit'] = this.historyPageSize;
     if (this.threadRootId > 0) {
       req['message_id'] = this.threadRootId;
     } else {
@@ -108,8 +113,14 @@ export class MessageStore {
     return req;
   }
 
-  open(aroundMessageId?: number): void {
-    this.sendSimple('openChat');
+  open(aroundMessageId?: number, passive: boolean = false): void {
+    // Embedded consumers such as the livestream interaction panel need chat
+    // history and updates without changing TDLib's open-chat lifecycle for the
+    // full ChatPage underneath them.
+    if (!passive) {
+      this.sendSimple('openChat');
+      this.chatOpened = true;
+    }
     this.unsubs.push(this.client.onUpdate('updateNewMessage', (u: TdObject) => this.onNewMessage(u)));
     this.unsubs.push(this.client.onUpdate('updateMessageSendSucceeded', (u: TdObject) => this.onSendSucceeded(u)));
     this.unsubs.push(this.client.onUpdate('updateMessageSendFailed', (u: TdObject) => this.onSendFailed(u)));
@@ -158,7 +169,10 @@ export class MessageStore {
   }
 
   close(): void {
-    this.sendSimple('closeChat');
+    if (this.chatOpened) {
+      this.sendSimple('closeChat');
+      this.chatOpened = false;
+    }
     for (const un of this.unsubs) {
       un();
     }
@@ -380,7 +394,7 @@ export class MessageStore {
     }
     const newestId = this.messages[this.messages.length - 1].id;
     this.newerPending = true;
-    const req = this.historyRequest(newestId, -(PAGE - 1));
+    const req = this.historyRequest(newestId, -(this.historyPageSize - 1));
     this.client.send(req).then((res: TdObject) => {
       this.newerPending = false;
       const arr = (res['messages'] as TdObject[] | undefined) ?? [];
@@ -404,6 +418,12 @@ export class MessageStore {
   }
 
   send(text: string, replyToId: number = 0): void {
+    this.sendAsync(text, replyToId).catch((e: TdError) => {
+      console.error(`MessageStore.send failed: ${e.message}`);
+    });
+  }
+
+  sendAsync(text: string, replyToId: number = 0): Promise<void> {
     const ft: TdObject = { '@type': 'formattedText' };
     ft['text'] = text;
     const content: TdObject = { '@type': 'inputMessageText' };
@@ -419,12 +439,10 @@ export class MessageStore {
     if (this.threadRootId > 0) {
       req['message_thread_id'] = this.threadRootId;
     }
-    this.client.send(req).then((m: TdObject) => {
+    return this.client.send(req).then((m: TdObject): void => {
       this.upsert(buildMessageEntry(m, this.users));
       this.resolveReplies();
       this.notify();
-    }).catch((e: TdError) => {
-      console.error(`MessageStore.send failed: ${e.message}`);
     });
   }
 
@@ -646,7 +664,12 @@ export class MessageStore {
   private onSendSucceeded(u: TdObject): void {
     const oldId = u['old_message_id'] as number | undefined;
     const m = u['message'] as TdObject | undefined;
-    if (oldId === undefined || m === undefined) {
+    if (oldId === undefined || m === undefined ||
+      (m['chat_id'] as number | undefined) !== this.chatId) {
+      return;
+    }
+    if (this.threadRootId > 0 &&
+      (m['message_thread_id'] as number | undefined) !== this.threadRootId) {
       return;
     }
     this.messages = this.messages.filter((e: MessageEntry) => e.id !== oldId);
@@ -657,7 +680,11 @@ export class MessageStore {
 
   private onSendFailed(u: TdObject): void {
     const m = u['message'] as TdObject | undefined;
-    if (m === undefined) {
+    if (m === undefined || (m['chat_id'] as number | undefined) !== this.chatId) {
+      return;
+    }
+    if (this.threadRootId > 0 &&
+      (m['message_thread_id'] as number | undefined) !== this.threadRootId) {
       return;
     }
     const id = m['id'] as number;
@@ -902,6 +929,12 @@ export class MessageStore {
       // Voice notes are small — download eagerly so tapping plays instantly.
       if (e.contentType === 'voice' && e.videoFileId !== 0 && e.videoPath === '') {
         this.requestVideoDownload(e.id); // deduped via videoFileToMsg
+      }
+      // Telegram GIFs are compact muted MP4 loops. Download them eagerly only
+      // while inline autoplay is enabled; normal videos remain tap-to-play.
+      if (e.isAnimation && e.videoFileId !== 0 && e.videoPath === '' &&
+        powerFeatureEnabled(KEY_POWER_AUTOPLAY_GIF)) {
+        this.requestVideoDownload(e.id);
       }
       // Animated (TGS) sticker source file — small (<64KB), download eagerly so
       // the Lottie animation starts as soon as the message is visible.

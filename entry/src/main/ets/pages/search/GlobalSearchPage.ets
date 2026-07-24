@@ -1,7 +1,7 @@
 import { router } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
-import { getTdClient } from '../../tdkit/Globals';
+import { getTdClient, getTdFilesDirectory } from '../../tdkit/Globals';
 import { openLocalFile } from '../../util/openLocalFile';
 import { formatFileSize } from '../../util/formatFileSize';
 import { TdObject, TdRequest, TdError } from '../../tdkit/TdTypes';
@@ -10,6 +10,7 @@ import { AvatarView } from '../chatlist/AvatarView';
 import { formatPreview } from '../../util/formatPreview';
 import { formatTime } from '../../util/formatTime';
 import { COLOR_PRIMARY, COLOR_TEXT_PRIMARY, COLOR_TEXT_SECONDARY } from '../../util/theme';
+import { KEY_POWER_SMOOTH_TRANSITIONS, powerAnimationDuration } from '../../store/AppSettings';
 
 interface FoundItem {
   chatId: number;
@@ -160,7 +161,9 @@ struct GlobalSearchPage {
   // keep it visible, and fire the tab's data loads.
   private onTabSelected(index: number): void {
     this.tab = index;
-    animateTo({ duration: 200, curve: Curve.EaseOut }, () => { this.moveIndicatorTo(index); });
+    animateTo({
+      duration: powerAnimationDuration(KEY_POWER_SMOOTH_TRANSITIONS, 200), curve: Curve.EaseOut
+    }, () => { this.moveIndicatorTo(index); });
     this.ensureTabVisible(index);
     if (index === TAB_DOWNLOADS) {
       this.loadDownloads();
@@ -305,7 +308,7 @@ struct GlobalSearchPage {
       return;
     }
     this.downloadsLoaded = true;
-    const base = `${(getContext(this) as common.UIAbilityContext).filesDir}/tdlib_files`;
+    const base = getTdFilesDirectory();
     const dirs: string[][] = [
       ['videos', 'video'], ['documents', 'file'], ['animations', 'video'], ['photos', 'photo']
     ];
@@ -1355,7 +1358,9 @@ struct GlobalSearchPage {
         }
       })
       .onAnimationStart((_index: number, targetIndex: number) => {
-        animateTo({ duration: 250, curve: Curve.EaseOut }, () => { this.moveIndicatorTo(targetIndex); });
+        animateTo({
+          duration: powerAnimationDuration(KEY_POWER_SMOOTH_TRANSITIONS, 250), curve: Curve.EaseOut
+        }, () => { this.moveIndicatorTo(targetIndex); });
         this.ensureTabVisible(targetIndex);
       })
       .onChange((index: number) => { this.onTabSelected(index); });

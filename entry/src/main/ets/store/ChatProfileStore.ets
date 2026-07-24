@@ -28,6 +28,8 @@ export class ChatProfileStore {
   username: string = '';
   isChannel: boolean = false;
   isMuted: boolean = false;
+  canManageVideoChats: boolean = false;
+  liveGroupCallId: number = 0;
   members: MemberItem[] = [];
 
   private client: TdClient;
@@ -59,6 +61,28 @@ export class ChatProfileStore {
     this.unsubs.push(this.client.onUpdate('updateChatNotificationSettings', (u: TdObject) => {
       if ((u['chat_id'] as number | undefined) === this.chatId) {
         this.applyNotificationSettings(u['notification_settings'] as TdObject | undefined);
+        this.notify();
+      }
+    }));
+    this.unsubs.push(this.client.onUpdate('updateChatVideoChat', (u: TdObject) => {
+      if ((u['chat_id'] as number | undefined) === this.chatId) {
+        this.applyVideoChat(u['video_chat'] as TdObject | undefined);
+        this.notify();
+      }
+    }));
+    this.unsubs.push(this.client.onUpdate('updateSupergroup', (u: TdObject) => {
+      const supergroup = u['supergroup'] as TdObject | undefined;
+      if (supergroup !== undefined &&
+        ((supergroup['id'] as number | undefined) ?? 0) === this.supergroupId) {
+        this.applySupergroup(supergroup);
+        this.notify();
+      }
+    }));
+    this.unsubs.push(this.client.onUpdate('updateBasicGroup', (u: TdObject) => {
+      const basicGroup = u['basic_group'] as TdObject | undefined;
+      if (basicGroup !== undefined &&
+        ((basicGroup['id'] as number | undefined) ?? 0) === this.basicGroupId) {
+        this.applyMemberStatus(basicGroup['status'] as TdObject | undefined);
         this.notify();
       }
     }));
@@ -125,6 +149,7 @@ export class ChatProfileStore {
       this.download(big !== undefined ? ((big['id'] as number | undefined) ?? 0) : 0,
         (p: string) => { this.avatarPath = p; });
       this.applyNotificationSettings(chat['notification_settings'] as TdObject | undefined);
+      this.applyVideoChat(chat['video_chat'] as TdObject | undefined);
       const type = chat['type'] as TdObject | undefined;
       const typeName = type !== undefined ? ((type['@type'] as string | undefined) ?? '') : '';
       if (typeName === 'chatTypeSupergroup') {
@@ -148,19 +173,47 @@ export class ChatProfileStore {
     this.isMuted = !useDefault && muteFor > 0;
   }
 
+  private applyVideoChat(videoChat: TdObject | undefined): void {
+    this.liveGroupCallId = videoChat !== undefined
+      ? ((videoChat['group_call_id'] as number | undefined) ?? 0) : 0;
+  }
+
+  private applyMemberStatus(status: TdObject | undefined): void {
+    const type = (status?.['@type'] as string | undefined) ?? '';
+    if (type === 'chatMemberStatusCreator') {
+      this.canManageVideoChats = true;
+      return;
+    }
+    if (type === 'chatMemberStatusAdministrator') {
+      const rights = status?.['rights'] as TdObject | undefined;
+      this.canManageVideoChats =
+        (rights?.['can_manage_video_chats'] as boolean | undefined) ?? false;
+      return;
+    }
+    this.canManageVideoChats = false;
+  }
+
+  private applySupergroup(supergroup: TdObject): void {
+    this.isChannel = (supergroup['is_channel'] as boolean | undefined) ?? false;
+    this.applyMemberStatus(supergroup['status'] as TdObject | undefined);
+    const usernames = supergroup['usernames'] as TdObject | undefined;
+    const editable = usernames !== undefined
+      ? ((usernames['editable_username'] as string | undefined) ?? '') : '';
+    const active = usernames !== undefined
+      ? (usernames['active_usernames'] as string[] | undefined) : undefined;
+    this.username = editable !== ''
+      ? editable : (active !== undefined && active.length > 0 ? active[0] : '');
+    const count = (supergroup['member_count'] as number | undefined) ?? 0;
+    if (count > 0) {
+      this.subtitle = `${formatMemberCount(count)} 位${this.isChannel ? '订阅者' : '成员'}`;
+    }
+  }
+
   private loadSupergroup(): void {
     const req: TdRequest = { '@type': 'getSupergroup' };
     req['supergroup_id'] = this.supergroupId;
     this.send(req, 'getSupergroup', (sg: TdObject) => {
-      this.isChannel = (sg['is_channel'] as boolean | undefined) ?? false;
-      const usernames = sg['usernames'] as TdObject | undefined;
-      const editable = usernames !== undefined ? ((usernames['editable_username'] as string | undefined) ?? '') : '';
-      const active = usernames !== undefined ? (usernames['active_usernames'] as string[] | undefined) : undefined;
-      this.username = editable !== '' ? editable : (active !== undefined && active.length > 0 ? active[0] : '');
-      const count = (sg['member_count'] as number | undefined) ?? 0;
-      if (count > 0) {
-        this.subtitle = `${formatMemberCount(count)} 位${this.isChannel ? '订阅者' : '成员'}`;
-      }
+      this.applySupergroup(sg);
       this.notify();
 
       const full: TdRequest = { '@type': 'getSupergroupFullInfo' };
@@ -224,6 +277,13 @@ export class ChatProfileStore {
   }
 
   private loadBasicGroup(): void {
+    const group: TdRequest = { '@type': 'getBasicGroup' };
+    group['basic_group_id'] = this.basicGroupId;
+    this.send(group, 'getBasicGroup', (basicGroup: TdObject) => {
+      this.applyMemberStatus(basicGroup['status'] as TdObject | undefined);
+      this.notify();
+    });
+
     const req: TdRequest = { '@type': 'getBasicGroupFullInfo' };
     req['basic_group_id'] = this.basicGroupId;
     this.send(req, 'getBasicGroupFullInfo', (fi: TdObject) => {

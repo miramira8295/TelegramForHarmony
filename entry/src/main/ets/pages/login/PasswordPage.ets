@@ -1,39 +1,93 @@
-import { getAuthService } from '../../tdkit/Globals';
+import {
+  canReturnToPreviousTdAccount, getAuthService, returnToPreviousTdAccount
+} from '../../tdkit/Globals';
 import { TdError } from '../../tdkit/TdTypes';
+import { COLOR_PRIMARY, COLOR_TEXT_PRIMARY, COLOR_TEXT_SECONDARY } from '../../util/theme';
+import { LoginHero } from './LoginHero';
 
 @Preview
 @Component
 export struct PasswordPage {
-  @State pw: string = '';
+  @State password: string = '';
   @State errorText: string = '';
   @State busy: boolean = false;
 
+  private submitPassword(): void {
+    if (this.busy || this.password === '') { return; }
+    this.busy = true;
+    this.errorText = '';
+    getAuthService().submitPassword(this.password).catch((caught: TdError): void => {
+      this.errorText = caught.message;
+    }).finally((): void => {
+      this.busy = false;
+    });
+  }
+
   build() {
-    Column({ space: 16 }) {
-      Text('Two-Step Verification').fontSize(28).fontWeight(FontWeight.Bold);
-      Text('Enter the password you set up.')
-        .fontSize(14).fontColor('#8E8E93').textAlign(TextAlign.Center);
-      TextInput({ text: this.pw })
-        .type(InputType.Password)
-        .onChange((v: string) => { this.pw = v; });
-      if (this.errorText !== '') {
-        Text(this.errorText).fontSize(13).fontColor('#FF3B30');
+    Scroll() {
+      Column({ space: 14 }) {
+        LoginHero({ mode: 'password', active: this.password !== '' });
+
+        Text('两步验证')
+          .fontSize(27).fontWeight(FontWeight.Bold).fontColor(COLOR_TEXT_PRIMARY);
+        Text('此账号启用了额外密码保护，请输入两步验证密码。')
+          .fontSize(14).fontColor(COLOR_TEXT_SECONDARY)
+          .textAlign(TextAlign.Center).lineHeight(21)
+          .padding({ left: 18, right: 18 });
+
+        TextInput({ text: this.password, placeholder: '密码' })
+          .type(InputType.Password)
+          .showPasswordIcon(true)
+          .fontSize(17).fontColor(COLOR_TEXT_PRIMARY)
+          .placeholderColor(COLOR_TEXT_SECONDARY)
+          .caretColor(COLOR_PRIMARY)
+          .backgroundColor($r('app.color.surface'))
+          .borderRadius(13)
+          .border({ width: 1, color: this.errorText !== '' ? '#FF3B30' : '#263390EC' })
+          .width('100%').height(54)
+          .padding({ left: 14, right: 12 })
+          .enterKeyType(EnterKeyType.Go)
+          .onChange((value: string): void => {
+            this.password = value;
+            this.errorText = '';
+          })
+          .onSubmit((): void => this.submitPassword());
+
+        if (this.errorText !== '') {
+          Text(this.errorText)
+            .width('100%').fontSize(13).fontColor('#FF3B30')
+            .padding({ left: 4, right: 4 });
+        }
+
+        Button(this.busy ? '正在验证…' : '继续')
+          .width('100%').height(50)
+          .fontSize(16).fontWeight(FontWeight.Medium)
+          .backgroundColor(COLOR_PRIMARY).borderRadius(14)
+          .enabled(!this.busy && this.password !== '')
+          .onClick((): void => this.submitPassword());
+
+        if (canReturnToPreviousTdAccount()) {
+          Button('返回原账号')
+            .width('100%').height(45)
+            .fontColor(COLOR_TEXT_SECONDARY)
+            .backgroundColor(Color.Transparent)
+            .enabled(!this.busy)
+            .onClick((): void => {
+              this.busy = true;
+              returnToPreviousTdAccount().catch((caught: Error): void => {
+                this.errorText = caught.message;
+                this.busy = false;
+              });
+            });
+        }
       }
-      Button(this.busy ? 'Verifying…' : 'Next')
-        .width('80%')
-        .enabled(!this.busy)
-        .onClick(async () => {
-          this.busy = true;
-          this.errorText = '';
-          try {
-            await getAuthService().submitPassword(this.pw);
-          } catch (e) {
-            this.errorText = (e as TdError).message;
-          }
-          this.busy = false;
-        });
+      .width('100%')
+      .constraintSize({ maxWidth: 430 })
+      .padding({ left: 24, right: 24, top: 28, bottom: 28 });
     }
-    .padding(24)
-    .width('100%');
+    .width('100%').height('100%')
+    .align(Alignment.Top)
+    .scrollBar(BarState.Off)
+    .backgroundColor($r('app.color.page_bg'));
   }
 }
